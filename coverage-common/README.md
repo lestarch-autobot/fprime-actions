@@ -26,13 +26,20 @@ action).
 
 ## What it does
 
-1. Discovers F´ modules by grepping every `CMakeLists.txt` under
+1. Installs `gcc-12` / `g++-12` (Ubuntu 22.04 ships `gcc-11`, whose `gcov`
+   has counter-overflow bugs and pathological slowness on heavily-templated
+   test code) and points the default `gcc` / `g++` / `gcov` symlinks at the
+   v12 toolchain for the rest of the job.
+2. Wipes any existing `build-fprime-automatic-*-ut*` cache so the coverage
+   build reconfigures cleanly under gcc-12.
+3. Discovers F´ modules by grepping every `CMakeLists.txt` under
    `working-directory` for `register_fprime_module(`. Modules that also call
    `register_fprime_ut(` are eligible for coverage.
-2. Runs `fprime-util check --all --coverage` once for the global headline
-   number.
-3. Runs `fprime-util check --coverage` in each module directory with a UT.
-4. Renames each module's `coverage.html` to `index.html`. The global
+4. Runs `fprime-util check --all --coverage` once for the global headline
+   number. Passes `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file`
+   to gcovr as defense against counter-overflow bugs.
+5. Runs `fprime-util check --coverage` in each module directory with a UT.
+6. Renames each module's `coverage.html` to `index.html`. The global
    `coverage-all.html` is **not** renamed.
 
 ## Inputs
@@ -43,6 +50,7 @@ action).
 | `target-platform`   | `""`    | Target platform/toolchain passed to `fprime-util`.                                    |
 | `jobs`              | `""`    | Parallel job count for check. `random` picks 1-32 each run; empty omits `-j`.        |
 | `strict`            | `false` | When `true`, fail the action if any module's UT/coverage build fails. Default `false` so per-module failures surface as missing `summary.json` (rendered as "no coverage" downstream) without failing CI. |
+| `debug`             | `false` | When `true`, forward gcovr's `-v` verbose output for global and per-module steps. Useful for diagnosing slow or stuck coverage runs. |
 
 ## Outputs
 

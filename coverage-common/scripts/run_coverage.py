@@ -25,13 +25,22 @@ import sys
 from pathlib import Path
 
 
-def _run_module(mod: str, root: Path, target_platform: str) -> bool:
+def _run_module(mod: str, root: Path, target_platform: str, debug: bool) -> bool:
     """Run coverage for a single module.  Returns True on success."""
     mod_dir = root / mod
     cmd = ["fprime-util", "check", "--coverage"]
     if target_platform:
         cmd.append(target_platform)
-    cmd.extend(["--pass-through", "--json-summary", "coverage/summary.json"])
+    cmd.extend([
+        "--pass-through",
+        "--json-summary", "coverage/summary.json",
+        # Defensive: gcov-11 had counter-overflow bugs (gcc#68080) that
+        # crash gcovr by default.  gcc-12+ doesn't trigger this, but the
+        # flag costs nothing and protects against future regressions.
+        "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+    ])
+    if debug:
+        cmd.append("-v")
 
     print(f"[cover] {mod}", flush=True)
     result = subprocess.run(cmd, cwd=str(mod_dir))
@@ -55,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Target platform forwarded to fprime-util")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero if any module failed (default: lenient, exit 0)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Forward gcovr's verbose output (-v) for each module")
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
@@ -72,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[skip] {mod} (no register_fprime_ut)")
             skipped += 1
             continue
-        if not _run_module(mod, root, args.target_platform):
+        if not _run_module(mod, root, args.target_platform, args.debug):
             failed += 1
         else:
             covered += 1
