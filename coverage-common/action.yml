@@ -40,40 +40,6 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: "Install gcc-12 for coverage build"
-      shell: bash
-      run: |
-        # Ubuntu 22.04 ships gcc-11 / gcov-11 by default.  gcov-11 has
-        # known regressions on heavily-templated test code (gcc#68080
-        # counter overflow + pathological symbol-table walks that can
-        # turn a 30 s coverage run into a 30 min one).  gcc-12 fixes both.
-        # Installing here only affects the coverage job; other jobs still
-        # use the runner's default compiler.
-        if ! command -v gcc-12 >/dev/null 2>&1; then
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends gcc-12 g++-12
-        fi
-        # Point the default gcc / g++ / gcov symlinks at the v12 toolchain
-        # so CMake, fprime-util, and gcovr all pick it up without per-tool
-        # plumbing.
-        sudo update-alternatives \
-          --install /usr/bin/gcc  gcc  /usr/bin/gcc-12  120 \
-          --slave   /usr/bin/g++  g++  /usr/bin/g++-12        \
-          --slave   /usr/bin/gcov gcov /usr/bin/gcov-12
-        echo "gcc:  $(gcc  --version | head -1)"
-        echo "g++:  $(g++  --version | head -1)"
-        echo "gcov: $(gcov --version | head -1)"
-
-    - name: "Reset build cache for gcc-12 coverage build"
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        # The caller's run-unit-tests step (if any) configured the build
-        # cache with whatever compiler was default at that time.  Wipe it
-        # so fprime-util check --all --coverage below reconfigures cleanly
-        # with the v12 toolchain.
-        rm -rf build-fprime-automatic-*-ut* || true
-
     - name: "Discover modules"
       id: discover
       working-directory: ${{ inputs.working-directory }}
@@ -105,8 +71,9 @@ runs:
           VERBOSE_FLAG="-v"
         fi
         # --gcov-ignore-parse-errors handles the known gcov-11 counter
-        # overflow (gcc#68080) defensively.  With gcc-12 it should never
-        # fire, but cheap insurance against future toolchain regressions.
+        # overflow (gcc#68080) defensively.  With gcov-12+ it should
+        # never fire, but it's cheap insurance against future toolchain
+        # regressions.
         fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
           --pass-through --json-summary coverage/summary.json \
           --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
