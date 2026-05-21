@@ -169,6 +169,10 @@ runs:
         path: ${{ steps.stage.outputs.artifact-dir }}
         if-no-files-found: error
         retention-days: ${{ inputs.artifact-retention-days }}
+        # Replace any prior artifact from an earlier attempt on the
+        # same workflow run, so re-running the Coverage Check job
+        # ("Re-run failed jobs") doesn't 422 on the duplicate name.
+        overwrite: true
 
     - name: "Write comment to step summary"
       if: steps.compare.outputs.comment-path != ''
