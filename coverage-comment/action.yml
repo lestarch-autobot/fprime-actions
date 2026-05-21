@@ -1,0 +1,166 @@
+name: "F´ Coverage (comment)"
+description: >
+  Post the sticky pull-request comment produced by an upstream
+  coverage-check run.  Designed to be called from a workflow_run job so
+  it can use pull-requests: write permissions even when the originating
+  pull_request event came from a fork, where GitHub strips write
+  permissions from GITHUB_TOKEN.  The originating coverage-check
+  uploads its comment body, regressions JSON, and PR number as a
+  workflow artifact; this action downloads the artifact and posts /
+  updates the sticky comment.
+
+  This action expects to run on a workflow_run event.  The triggering
+  workflow_run payload provides the run id of the originating
+  pull_request workflow, which this action queries for its uploaded
+  artifact.
+
+inputs:
+  artifact-name:
+    description: >
+      Name of the artifact uploaded by the originating coverage-check
+      run.  Must match the 'artifact-name' input passed to
+      coverage-check on the pull_request side.
+    required: false
+    default: "fprime-coverage-comment"
+  comment-marker:
+    description: >
+      Hidden HTML marker used to find and edit the sticky PR comment.
+      Used as a fallback if the artifact does not carry its own
+      comment-marker.txt (older coverage-check versions).  When the
+      artifact does carry the marker, the artifact's value wins.
+    required: false
+    default: "<!-- fprime-coverage-comment -->"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Download artifact"
+      id: download
+      uses: actions/github-script@v7
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+
+          if (context.eventName !== 'workflow_run') {
+            core.setFailed(
+              `coverage-comment must be invoked from a workflow_run event, ` +
+              `but the current event is '${context.eventName}'.`
+            );
+            return;
+          }
+
+          const { owner, repo } = context.repo;
+          const sourceRunId = context.payload.workflow_run.id;
+          const artifactName = process.env.ARTIFACT_NAME;
+          core.info(`Looking for artifact '${artifactName}' on workflow run ${sourceRunId}`);
+
+          // Paginate; in practice there are very few artifacts per run
+          // but the API caps a single page at 100.
+          const artifacts = await github.paginate(
+            github.rest.actions.listWorkflowRunArtifacts,
+            { owner, repo, run_id: sourceRunId, per_page: 100 },
+          );
+          const artifact = artifacts.find(a => a.name === artifactName);
+          if (!artifact) {
+            const names = artifacts.map(a => a.name).join(', ') || '(none)';
+            core.setFailed(
+              `Artifact '${artifactName}' not found on workflow run ${sourceRunId}. ` +
+              `Available artifacts: ${names}`
+            );
+            return;
+          }
+          if (artifact.expired) {
+            core.setFailed(`Artifact '${artifactName}' (id ${artifact.id}) has expired.`);
+            return;
+          }
+
+          const download = await github.rest.actions.downloadArtifact({
+            owner, repo, artifact_id: artifact.id, archive_format: 'zip',
+          });
+          const zipDir = process.env.RUNNER_TEMP || '/tmp';
+          const zipPath = path.join(zipDir, `${artifactName}.zip`);
+          fs.writeFileSync(zipPath, Buffer.from(download.data));
+          core.info(`Downloaded ${download.data.byteLength} bytes to ${zipPath}`);
+
+          const extractDir = path.join(zipDir, artifactName);
+          fs.rmSync(extractDir, { recursive: true, force: true });
+          fs.mkdirSync(extractDir, { recursive: true });
+
+          core.setOutput('zip-path', zipPath);
+          core.setOutput('extract-dir', extractDir);
+
+    - name: "Unzip artifact"
+      if: steps.download.outputs.zip-path != ''
+      shell: bash
+      env:
+        ZIP_PATH: ${{ steps.download.outputs.zip-path }}
+        EXTRACT_DIR: ${{ steps.download.outputs.extract-dir }}
+      run: |
+        unzip -q -o "$ZIP_PATH" -d "$EXTRACT_DIR"
+        ls -la "$EXTRACT_DIR"
+
+    - name: "Post sticky PR comment"
+      if: steps.download.outputs.extract-dir != ''
+      uses: actions/github-script@v7
+      env:
+        EXTRACT_DIR: ${{ steps.download.outputs.extract-dir }}
+        FALLBACK_MARKER: ${{ inputs.comment-marker }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+
+          const extractDir = process.env.EXTRACT_DIR;
+          const prNumberPath = path.join(extractDir, 'pr-number.txt');
+          const commentPath = path.join(extractDir, 'comment.md');
+          const markerPath = path.join(extractDir, 'comment-marker.txt');
+
+          if (!fs.existsSync(prNumberPath)) {
+            core.setFailed(`Artifact is missing pr-number.txt`);
+            return;
+          }
+          if (!fs.existsSync(commentPath)) {
+            core.setFailed(`Artifact is missing comment.md`);
+            return;
+          }
+
+          const pr = parseInt(fs.readFileSync(prNumberPath, 'utf8').trim(), 10);
+          if (!Number.isFinite(pr) || pr <= 0) {
+            core.setFailed(`Invalid PR number in artifact: '${fs.readFileSync(prNumberPath, 'utf8').trim()}'`);
+            return;
+          }
+          const body = fs.readFileSync(commentPath, 'utf8');
+          const marker = fs.existsSync(markerPath)
+            ? fs.readFileSync(markerPath, 'utf8').trim()
+            : process.env.FALLBACK_MARKER;
+          if (!marker) {
+            core.setFailed(`No comment marker available (artifact missing comment-marker.txt and no fallback set).`);
+            return;
+          }
+          if (!body.includes(marker)) {
+            core.warning(
+              `Comment body does not contain marker '${marker}'. The next run ` +
+              `will not be able to find this comment to update it in place.`
+            );
+          }
+
+          const { owner, repo } = context.repo;
+          const comments = await github.paginate(
+            github.rest.issues.listComments,
+            { owner, repo, issue_number: pr, per_page: 100 },
+          );
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner, repo, comment_id: existing.id, body,
+            });
+            core.info(`Updated existing sticky comment ${existing.id} on PR #${pr}.`);
+          } else {
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: pr, body,
+            });
+            core.info(`Created new sticky comment on PR #${pr}.`);
+          }

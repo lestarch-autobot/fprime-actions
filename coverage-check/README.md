@@ -3,11 +3,20 @@
 Composite action that compares the per-module + global gcovr coverage
 produced by [`coverage-common`](../coverage-common/) on a
 **pull request** against the matching baseline branch
-(`coverage/<base_ref>`). Posts a sticky per-module delta comment to the
-PR.
+(`coverage/<base_ref>`) and **uploads the resulting comment body as a
+workflow artifact**.
 
-This action never pushes to any branch. Pair it with
-[`coverage-update`](../coverage-update/) for the push side.
+A companion [`coverage-comment`](../coverage-comment/) action,
+triggered from a `workflow_run` job, downloads the artifact and posts
+the sticky PR comment. This two-stage split is the GitHub-recommended
+pattern for commenting on pull requests opened from forks, since
+GitHub strips write permissions from `GITHUB_TOKEN` on fork-triggered
+`pull_request` events.
+
+This action never pushes to any branch and never writes to the pull
+request. Pair it with [`coverage-update`](../coverage-update/) for the
+push side and [`coverage-comment`](../coverage-comment/) for the
+comment-posting side.
 
 ## Prerequisites
 
@@ -36,10 +45,11 @@ action).
 ```yaml
 permissions:
   contents: read
-  pull-requests: write
 ```
 
-`pull-requests: write` is needed to post or update the sticky comment.
+`pull-requests: write` is **not** required here &mdash; the comment is
+posted by the companion `coverage-comment` workflow, which runs on
+`workflow_run` and is the only stage that needs write permissions.
 
 ## What it does
 
@@ -49,21 +59,27 @@ permissions:
 2. Computes per-module line/branch deltas (using outputs produced by
    `coverage-common`) and writes a markdown comment with the worst
    regressions first.
-3. Posts the comment to the PR. If a previous comment matching
-   `comment-marker` exists, it is updated in place; otherwise a new
-   comment is created.
+3. Uploads `comment.md`, `regressions.json`, `pr-number.txt`, and
+   `comment-marker.txt` as a workflow artifact named `artifact-name`
+   (default `fprime-coverage-comment`) for the companion
+   `coverage-comment` workflow to consume.
+4. Writes the comment body to the job step summary so reviewers can
+   still see the data on the Actions run page even if the comment
+   workflow has not yet been deployed.
 
 ## Inputs
 
-| Input                    | Default                              | Description                                                                                   |
-|--------------------------|--------------------------------------|-----------------------------------------------------------------------------------------------|
-| `working-directory`      | `.`                                  | Directory the coverage outputs were produced in (should match `coverage-common`).             |
-| `modules-jsonl`          | (required)                           | Path to the JSON-Lines file produced by `coverage-common` (`modules-jsonl` output).           |
-| `baseline-branch-prefix` | `coverage`                           | Prefix applied to `<base_ref>` to form the baseline branch (`<prefix>/<base_ref>`).           |
-| `coverage-subdirectory`  | `coverage`                           | Subdirectory inside each module's baseline-branch entry. Set to `""` to flatten.              |
-| `regression-threshold`   | `0.5`                                | Percentage points of line-coverage drop tolerated per module.                                  |
-| `fail-on-regression`     | `false`                              | If `true`, the action exits non-zero when any module regresses beyond the threshold.          |
-| `comment-marker`         | `<!-- fprime-coverage-comment -->`   | Hidden HTML marker used to find and edit the sticky PR comment.                               |
+| Input                      | Default                              | Description                                                                                          |
+|----------------------------|--------------------------------------|------------------------------------------------------------------------------------------------------|
+| `working-directory`        | `.`                                  | Directory the coverage outputs were produced in (should match `coverage-common`).                    |
+| `modules-jsonl`            | (required)                           | Path to the JSON-Lines file produced by `coverage-common` (`modules-jsonl` output).                  |
+| `baseline-branch-prefix`   | `coverage`                           | Prefix applied to `<base_ref>` to form the baseline branch (`<prefix>/<base_ref>`).                  |
+| `coverage-subdirectory`    | `coverage`                           | Subdirectory inside each module's baseline-branch entry. Set to `""` to flatten.                     |
+| `regression-threshold`     | `0.5`                                | Percentage points of line-coverage drop tolerated per module.                                         |
+| `fail-on-regression`       | `false`                              | If `true`, the action exits non-zero when any module regresses beyond the threshold.                 |
+| `comment-marker`           | `<!-- fprime-coverage-comment -->`   | Hidden HTML marker used to find and edit the sticky PR comment.                                      |
+| `artifact-name`            | `fprime-coverage-comment`            | Workflow-artifact name. The companion `coverage-comment` action must be given the same name.         |
+| `artifact-retention-days`  | `7`                                  | Days to retain the uploaded artifact (max 90).                                                       |
 
 ## Outputs
 
@@ -74,18 +90,20 @@ permissions:
 
 ## Usage
 
+The PR-side workflow needs no special token:
+
 ```yaml
-name: "Coverage"
+name: "Coverage Check"
 on:
   pull_request:
     branches: [devel, release/**]
 
+permissions:
+  contents: read
+
 jobs:
   coverage-check:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      pull-requests: write
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -99,6 +117,10 @@ jobs:
         with:
           modules-jsonl: ${{ steps.cov.outputs.modules-jsonl }}
 ```
+
+Pair it with a `workflow_run` companion that does the posting; see
+[`coverage-comment`'s README](../coverage-comment/README.md) for the
+exact shape.
 
 To enable the regression gate later, flip a single input:
 

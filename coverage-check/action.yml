@@ -1,11 +1,18 @@
 name: "F´ Coverage (check)"
 description: >
   Compare per-module + global gcovr coverage against the matching
-  coverage/<base_ref> baseline branch and post a sticky comment on the
-  pull request.  Intended to run on pull_request events with
-  permissions: { contents: read, pull-requests: write }.  Call the
-  coverage-common action first to produce the coverage outputs and
-  pass its 'modules-jsonl' output into this action.
+  coverage/<base_ref> baseline branch and upload the resulting comment
+  body as a workflow artifact.  Intended to run on pull_request events
+  with permissions: { contents: read } only.  A companion
+  coverage-comment action, triggered from a workflow_run job with
+  permissions: pull-requests: write, downloads the artifact and posts
+  the sticky PR comment.  This two-stage split is the GitHub-recommended
+  pattern for commenting on pull requests opened from forks, since
+  GitHub strips write permissions from GITHUB_TOKEN on fork-triggered
+  pull_request events.
+
+  Call the coverage-common action first to produce the coverage outputs
+  and pass its 'modules-jsonl' output into this action.
 inputs:
   working-directory:
     description: "Directory the coverage outputs were produced in (should match coverage-common)"
@@ -38,6 +45,18 @@ inputs:
     description: "Hidden HTML marker used to find and edit the sticky PR comment"
     required: false
     default: "<!-- fprime-coverage-comment -->"
+  artifact-name:
+    description: >
+      Name of the workflow artifact to upload.  The companion
+      coverage-comment action must be given the same name on its
+      'artifact-name' input so it can locate the artifact on the
+      triggering workflow run.
+    required: false
+    default: "fprime-coverage-comment"
+  artifact-retention-days:
+    description: "Days to retain the uploaded artifact (max 90)."
+    required: false
+    default: "7"
 
 outputs:
   comment-path:
@@ -113,25 +132,53 @@ runs:
         echo "comment-path=$COMMENT_PATH" >> "$GITHUB_OUTPUT"
         echo "regressions-json-path=$REGRESSIONS_PATH" >> "$GITHUB_OUTPUT"
 
-    - name: "Post sticky PR comment"
+    - name: "Stage comment artifact"
+      id: stage
       if: steps.compare.outputs.comment-path != ''
-      uses: actions/github-script@v7
+      shell: bash
       env:
         COMMENT_PATH: ${{ steps.compare.outputs.comment-path }}
+        REGRESSIONS_PATH: ${{ steps.compare.outputs.regressions-json-path }}
         MARKER: ${{ inputs.comment-marker }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        ARTIFACT_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-artifact"
+        rm -rf "$ARTIFACT_DIR"
+        mkdir -p "$ARTIFACT_DIR"
+        cp "$COMMENT_PATH" "$ARTIFACT_DIR/comment.md"
+        if [ -f "$REGRESSIONS_PATH" ]; then
+          cp "$REGRESSIONS_PATH" "$ARTIFACT_DIR/regressions.json"
+        fi
+        # PR number and marker are written so the workflow_run side can
+        # locate the PR + identify the sticky comment without needing
+        # access to the pull_request event payload (which is unavailable
+        # to workflow_run-triggered jobs).
+        if [ -z "$PR_NUMBER" ]; then
+          echo "::error::No pull request number available; this action only supports pull_request events."
+          exit 1
+        fi
+        echo "$PR_NUMBER" > "$ARTIFACT_DIR/pr-number.txt"
+        echo "$MARKER" > "$ARTIFACT_DIR/comment-marker.txt"
+        echo "artifact-dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+
+    - name: "Upload comment artifact"
+      if: steps.stage.outputs.artifact-dir != ''
+      uses: actions/upload-artifact@v4
       with:
-        script: |
-          const fs = require('fs');
-          const body = fs.readFileSync(process.env.COMMENT_PATH, 'utf8');
-          const marker = process.env.MARKER;
-          const { owner, repo } = context.repo;
-          const issue_number = context.issue.number;
-          const { data: comments } = await github.rest.issues.listComments({
-            owner, repo, issue_number, per_page: 100,
-          });
-          const existing = comments.find(c => c.body && c.body.includes(marker));
-          if (existing) {
-            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-          } else {
-            await github.rest.issues.createComment({ owner, repo, issue_number, body });
-          }
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.stage.outputs.artifact-dir }}
+        if-no-files-found: error
+        retention-days: ${{ inputs.artifact-retention-days }}
+
+    - name: "Write comment to step summary"
+      if: steps.compare.outputs.comment-path != ''
+      shell: bash
+      env:
+        COMMENT_PATH: ${{ steps.compare.outputs.comment-path }}
+      run: |
+        # Make the comment body discoverable on the Actions run page in
+        # case the workflow_run side can't post (e.g. workflow not yet
+        # on default branch, or run is on a non-default base ref).
+        echo "## Coverage report (preview)" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        cat "$COMMENT_PATH" >> "$GITHUB_STEP_SUMMARY"
