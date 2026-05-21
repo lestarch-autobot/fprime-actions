@@ -6,13 +6,14 @@ description: >
   pull_request event came from a fork, where GitHub strips write
   permissions from GITHUB_TOKEN.  The originating coverage-check
   uploads its comment body, regressions JSON, and PR number as a
-  workflow artifact; this action downloads the artifact and posts /
-  updates the sticky comment.
+  workflow artifact; this action downloads the artifact (via
+  actions/download-artifact's cross-run support) and posts / updates
+  the sticky comment.
 
   This action expects to run on a workflow_run event.  The triggering
   workflow_run payload provides the run id of the originating
-  pull_request workflow, which this action queries for its uploaded
-  artifact.
+  pull_request workflow, which this action passes to download-artifact
+  as the run-id to fetch from.
 
 inputs:
   artifact-name:
@@ -34,79 +35,28 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: "Download artifact"
-      id: download
-      uses: actions/github-script@v7
-      env:
-        ARTIFACT_NAME: ${{ inputs.artifact-name }}
-      with:
-        script: |
-          const fs = require('fs');
-          const path = require('path');
-
-          if (context.eventName !== 'workflow_run') {
-            core.setFailed(
-              `coverage-comment must be invoked from a workflow_run event, ` +
-              `but the current event is '${context.eventName}'.`
-            );
-            return;
-          }
-
-          const { owner, repo } = context.repo;
-          const sourceRunId = context.payload.workflow_run.id;
-          const artifactName = process.env.ARTIFACT_NAME;
-          core.info(`Looking for artifact '${artifactName}' on workflow run ${sourceRunId}`);
-
-          // Paginate; in practice there are very few artifacts per run
-          // but the API caps a single page at 100.
-          const artifacts = await github.paginate(
-            github.rest.actions.listWorkflowRunArtifacts,
-            { owner, repo, run_id: sourceRunId, per_page: 100 },
-          );
-          const artifact = artifacts.find(a => a.name === artifactName);
-          if (!artifact) {
-            const names = artifacts.map(a => a.name).join(', ') || '(none)';
-            core.setFailed(
-              `Artifact '${artifactName}' not found on workflow run ${sourceRunId}. ` +
-              `Available artifacts: ${names}`
-            );
-            return;
-          }
-          if (artifact.expired) {
-            core.setFailed(`Artifact '${artifactName}' (id ${artifact.id}) has expired.`);
-            return;
-          }
-
-          const download = await github.rest.actions.downloadArtifact({
-            owner, repo, artifact_id: artifact.id, archive_format: 'zip',
-          });
-          const zipDir = process.env.RUNNER_TEMP || '/tmp';
-          const zipPath = path.join(zipDir, `${artifactName}.zip`);
-          fs.writeFileSync(zipPath, Buffer.from(download.data));
-          core.info(`Downloaded ${download.data.byteLength} bytes to ${zipPath}`);
-
-          const extractDir = path.join(zipDir, artifactName);
-          fs.rmSync(extractDir, { recursive: true, force: true });
-          fs.mkdirSync(extractDir, { recursive: true });
-
-          core.setOutput('zip-path', zipPath);
-          core.setOutput('extract-dir', extractDir);
-
-    - name: "Unzip artifact"
-      if: steps.download.outputs.zip-path != ''
+    - name: "Verify workflow_run event"
       shell: bash
       env:
-        ZIP_PATH: ${{ steps.download.outputs.zip-path }}
-        EXTRACT_DIR: ${{ steps.download.outputs.extract-dir }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
-        unzip -q -o "$ZIP_PATH" -d "$EXTRACT_DIR"
-        ls -la "$EXTRACT_DIR"
+        if [ "$EVENT_NAME" != "workflow_run" ]; then
+          echo "::error::coverage-comment must be invoked from a workflow_run event (got: $EVENT_NAME)."
+          exit 1
+        fi
+
+    - name: "Download coverage artifact"
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ github.token }}
+        path: ${{ runner.temp }}/fprime-coverage-comment
 
     - name: "Post sticky PR comment"
-      if: steps.download.outputs.extract-dir != ''
       uses: actions/github-script@v7
       env:
-        EXTRACT_DIR: ${{ steps.download.outputs.extract-dir }}
+        EXTRACT_DIR: ${{ runner.temp }}/fprime-coverage-comment
         FALLBACK_MARKER: ${{ inputs.comment-marker }}
       with:
         script: |
@@ -119,19 +69,21 @@ runs:
           const markerPath = path.join(extractDir, 'comment-marker.txt');
 
           if (!fs.existsSync(prNumberPath)) {
-            core.setFailed(`Artifact is missing pr-number.txt`);
+            core.setFailed(`Artifact is missing pr-number.txt at ${prNumberPath}`);
             return;
           }
           if (!fs.existsSync(commentPath)) {
-            core.setFailed(`Artifact is missing comment.md`);
+            core.setFailed(`Artifact is missing comment.md at ${commentPath}`);
             return;
           }
 
-          const pr = parseInt(fs.readFileSync(prNumberPath, 'utf8').trim(), 10);
+          const prRaw = fs.readFileSync(prNumberPath, 'utf8').trim();
+          const pr = parseInt(prRaw, 10);
           if (!Number.isFinite(pr) || pr <= 0) {
-            core.setFailed(`Invalid PR number in artifact: '${fs.readFileSync(prNumberPath, 'utf8').trim()}'`);
+            core.setFailed(`Invalid PR number in artifact: '${prRaw}'`);
             return;
           }
+
           const body = fs.readFileSync(commentPath, 'utf8');
           const marker = fs.existsSync(markerPath)
             ? fs.readFileSync(markerPath, 'utf8').trim()
