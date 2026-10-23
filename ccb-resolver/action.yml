@@ -1,0 +1,105 @@
+name: "F´ CCB resolver"
+description: >
+  Apply Change Control Board (CCB) decisions recorded on a GitHub Projects
+  (v2) board.  For every item whose "Status" is "CCB": a "CCB Resolution"
+  of "Approved" moves the item to the approved status (default
+  "Backlog - Deferred"); "Disapproved" posts the disapproval comment on the
+  linked open issue and closes it as not planned (the board's built-in
+  closed -> Done workflow then moves the item; if it is still "CCB" on a
+  later run its Status is set to "Done").  "Tabled", "Needs Study", and
+  blank resolutions are left alone, and items whose Status is anything
+  other than "CCB" are never touched.
+
+  Field and option IDs are resolved by NAME at runtime.  The only project
+  mutation issued is the per-item updateProjectV2ItemFieldValue; field
+  definitions are never created, changed, or deleted.  The default mode is
+  a dry-run that only reports; pass dry-run: false to write.  Every item
+  acted on (or that would be acted on) is listed in the step summary.
+inputs:
+  token:
+    description: >
+      Token used for the GraphQL API.  Needs read/write on the project
+      (classic PAT: "project" scope; fine-grained PAT or GitHub App:
+      organization Projects read/write) and Issues write on the
+      repositories holding the linked issues.  GITHUB_TOKEN cannot access
+      organization projects.
+    required: true
+  project-owner:
+    description: "Organization or user login that owns the project"
+    required: false
+    default: "nasa"
+  project-number:
+    description: "Project number as shown in the project URL"
+    required: false
+    default: "21"
+  dry-run:
+    description: "When 'true' (default) only report what would change; set to 'false' to write"
+    required: false
+    default: "true"
+  disapproval-comment:
+    description: "Comment posted on a disapproved issue before it is closed as not planned"
+    required: false
+    default: >-
+      Our CCB team thanks you for this contribution, but we believe that this
+      is outside the technical scope of the F Prime project and believe that
+      this change is better contributed in a user's project.
+  approved-status:
+    description: "Status option an Approved item is moved to"
+    required: false
+    default: "Backlog - Deferred"
+  done-status:
+    description: "Status option used for a Disapproved item whose issue is already closed"
+    required: false
+    default: "Done"
+  mutation-delay-seconds:
+    description: "Pause after each mutation to respect secondary rate limits"
+    required: false
+    default: "1"
+
+outputs:
+  planned:
+    description: "Number of actions planned (dry-run) or attempted (apply)"
+    value: ${{ steps.resolve.outputs.planned }}
+  applied:
+    description: "Number of actions applied successfully (always 0 in dry-run)"
+    value: ${{ steps.resolve.outputs.applied }}
+  failed:
+    description: "Number of actions that failed"
+    value: ${{ steps.resolve.outputs.failed }}
+  skipped:
+    description: "Number of CCB items needing manual handling"
+    value: ${{ steps.resolve.outputs.skipped }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Resolve CCB decisions"
+      id: resolve
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        SCRIPT: ${{ github.action_path }}/scripts/ccb_resolver.py
+        PROJECT_OWNER: ${{ inputs.project-owner }}
+        PROJECT_NUMBER: ${{ inputs.project-number }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        DISAPPROVAL_COMMENT: ${{ inputs.disapproval-comment }}
+        APPROVED_STATUS: ${{ inputs.approved-status }}
+        DONE_STATUS: ${{ inputs.done-status }}
+        MUTATION_DELAY: ${{ inputs.mutation-delay-seconds }}
+        API_URL: ${{ github.graphql_url }}
+      run: |
+        APPLY_FLAG=()
+        if [ "$DRY_RUN" = "false" ]; then
+          APPLY_FLAG+=(--apply)
+        else
+          echo "dry-run: nothing will be written (set dry-run: false to apply)"
+        fi
+        python3 "$SCRIPT" \
+          --owner "$PROJECT_OWNER" \
+          --number "$PROJECT_NUMBER" \
+          --approved-status "$APPROVED_STATUS" \
+          --done-status "$DONE_STATUS" \
+          --disapproval-comment "$DISAPPROVAL_COMMENT" \
+          --mutation-delay "$MUTATION_DELAY" \
+          --api-url "$API_URL" \
+          "${APPLY_FLAG[@]}"
