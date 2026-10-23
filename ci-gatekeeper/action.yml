@@ -1,0 +1,106 @@
+name: "F´ CI gatekeeper"
+description: >
+  Approve held ("Approve and run") workflow runs on fork pull requests whose
+  current head carries an autobot review summary with CI safety = Go.  Every
+  run first checks the repository's Actions queue and exits immediately when
+  it is busy (queued + in-progress runs at or above busy-threshold) without
+  scanning any PR.  When the queue is calm, open non-draft PRs with
+  action_required runs are examined: the latest summary review
+  (<!-- fprime-review-summary v1 -->) by an allow-listed reviewer must name
+  the PR's exact current head in its reviewed_head line and carry the exact
+  verdict token Go in its CI safety table row.  Eligible PRs are approved
+  oldest-first, max-approvals PRs per run (default 1).  Anything that is not
+  an exact Go is treated as no verdict (fail closed).  Deterministic; no LLM.
+  The default mode is a dry-run that only reports; pass dry-run: false to
+  approve runs.
+inputs:
+  token:
+    description: >
+      Token used for the REST API.  Needs Actions: write (to approve runs) and
+      Pull requests: read on the repository.  GITHUB_TOKEN with
+      `permissions: actions: write` qualifies per the GitHub REST docs for
+      "Approve a workflow run for a fork pull request"; a classic PAT needs
+      the repo scope.
+    required: true
+  repository:
+    description: "owner/name of the repository whose PRs are gated"
+    required: false
+    default: ${{ github.repository }}
+  busy-threshold:
+    description: >
+      Maximum number of queued + in-progress workflow runs (excluding this
+      gatekeeper's own run) for the queue to count as calm.  At or above this
+      number the run exits without scanning PRs.
+    required: false
+    default: "10"
+  reviewers:
+    description: "Comma-separated allow-list of autobot logins whose summary reviews count"
+    required: false
+    default: "lestarch-autobot,thomas-bc-autowot"
+  dry-run:
+    description: "When 'true' (default) only report what would be approved; set to 'false' to approve"
+    required: false
+    default: "true"
+  max-approvals:
+    description: "Number of eligible PRs (oldest first) whose held runs are approved per run"
+    required: false
+    default: "1"
+  approve-delay-seconds:
+    description: "Pause after each approve call to respect secondary rate limits"
+    required: false
+    default: "1"
+
+outputs:
+  busy:
+    description: "'true' when the queue was busy and no PR was scanned"
+    value: ${{ steps.gate.outputs.busy }}
+  queue-count:
+    description: "Number of queued + in-progress runs observed (own run excluded)"
+    value: ${{ steps.gate.outputs.queue-count }}
+  candidates:
+    description: "Number of open PRs with held runs"
+    value: ${{ steps.gate.outputs.candidates }}
+  eligible:
+    description: "Number of candidates whose current head has CI safety = Go"
+    value: ${{ steps.gate.outputs.eligible }}
+  selected-pr:
+    description: "PR number acted on (or that would be acted on in dry-run); empty if none"
+    value: ${{ steps.gate.outputs.selected-pr }}
+  approved:
+    description: "Number of runs approved (always 0 in dry-run)"
+    value: ${{ steps.gate.outputs.approved }}
+  failed:
+    description: "Number of approve calls that failed"
+    value: ${{ steps.gate.outputs.failed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Gate held workflow runs"
+      id: gate
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        SCRIPT: ${{ github.action_path }}/scripts/ci_gatekeeper.py
+        REPOSITORY: ${{ inputs.repository }}
+        BUSY_THRESHOLD: ${{ inputs.busy-threshold }}
+        REVIEWERS: ${{ inputs.reviewers }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        MAX_APPROVALS: ${{ inputs.max-approvals }}
+        APPROVE_DELAY: ${{ inputs.approve-delay-seconds }}
+        API_URL: ${{ github.api_url }}
+      run: |
+        APPLY_FLAG=()
+        if [ "$DRY_RUN" = "false" ]; then
+          APPLY_FLAG+=(--apply)
+        else
+          echo "dry-run: nothing will be approved (set dry-run: false to approve)"
+        fi
+        python3 "$SCRIPT" \
+          --repository "$REPOSITORY" \
+          --busy-threshold "$BUSY_THRESHOLD" \
+          --reviewers "$REVIEWERS" \
+          --max-approvals "$MAX_APPROVALS" \
+          --approve-delay "$APPROVE_DELAY" \
+          --api-url "$API_URL" \
+          "${APPLY_FLAG[@]}"

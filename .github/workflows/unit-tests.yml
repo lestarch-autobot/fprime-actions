@@ -1,0 +1,38 @@
+# Runs the self-contained Python unit tests that ship with individual actions
+# (<action>/tests/test_*.py).  Each test file is its own runner: it prints
+# OK/FAIL per test and exits non-zero on any failure.
+
+name: "Unit Tests"
+
+on:
+  push:
+    branches: [devel]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: "Action unit tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Run action unit tests"
+        shell: bash
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(*/tests/test_*.py)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No unit tests found"
+            exit 0
+          fi
+          status=0
+          for file in "${files[@]}"; do
+            echo "::group::${file}"
+            python3 "${file}" || status=1
+            echo "::endgroup::"
+          done
+          exit "${status}"
