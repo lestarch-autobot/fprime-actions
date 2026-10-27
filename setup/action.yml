@@ -25,7 +25,9 @@ runs:
     uses: actions/setup-python@v5
     with:
       python-version: "3.x"
-  - run: git fetch --tags
+  # --no-recurse-submodules: with git's default on-demand recursion this fetch would also fetch the submodule pins
+  # of every newly fetched branch and fail on any pin that no longer exists upstream (e.g. a force-pushed fork).
+  - run: git fetch --tags --no-recurse-submodules
     shell: bash
   # Cache pip downloads/wheels so requirement installs avoid re-downloading.
   # Rooted in RUNNER_TEMP so the workspace-relative archive restores on every runner layout.
