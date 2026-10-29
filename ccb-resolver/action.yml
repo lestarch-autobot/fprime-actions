@@ -8,7 +8,9 @@ description: >
   closed -> Done workflow then moves the item; if it is still "CCB" on a
   later run its Status is set to "Done").  "Tabled", "Needs Study", and
   blank resolutions are left alone, and items whose Status is anything
-  other than "CCB" are never touched.
+  other than "CCB" are never touched -- except that an open issue whose
+  Status is blank is moved to the intake status (default "CCB"), backing
+  up the board's built-in "item added -> CCB" workflow.
 
   Field and option IDs are resolved by NAME at runtime.  The only project
   mutation issued is the per-item updateProjectV2ItemFieldValue; field
@@ -51,6 +53,10 @@ inputs:
     description: "Status option used for a Disapproved item whose issue is already closed"
     required: false
     default: "Done"
+  intake-status:
+    description: "Status option given to an open issue whose Status is blank (empty string disables)"
+    required: false
+    default: "CCB"
   mutation-delay-seconds:
     description: "Pause after each mutation to respect secondary rate limits"
     required: false
@@ -85,6 +91,7 @@ runs:
         DISAPPROVAL_COMMENT: ${{ inputs.disapproval-comment }}
         APPROVED_STATUS: ${{ inputs.approved-status }}
         DONE_STATUS: ${{ inputs.done-status }}
+        INTAKE_STATUS: ${{ inputs.intake-status }}
         MUTATION_DELAY: ${{ inputs.mutation-delay-seconds }}
         API_URL: ${{ github.graphql_url }}
       run: |
@@ -99,6 +106,7 @@ runs:
           --number "$PROJECT_NUMBER" \
           --approved-status "$APPROVED_STATUS" \
           --done-status "$DONE_STATUS" \
+          --intake-status "$INTAKE_STATUS" \
           --disapproval-comment "$DISAPPROVAL_COMMENT" \
           --mutation-delay "$MUTATION_DELAY" \
           --api-url "$API_URL" \

@@ -13,7 +13,12 @@ the Change Control Board decision recorded in the ``CCB Resolution`` field:
 ``Tabled`` / ``Needs Study`` / blank
     No action.
 
-Items whose ``Status`` is anything other than ``CCB`` are never touched.
+Items whose ``Status`` is anything other than ``CCB`` are never touched,
+with one exception: an *open issue* whose ``Status`` is blank is moved to
+the intake status (default ``CCB``).  This backs up the board's built-in
+"item added -> Status: CCB" workflow, which GitHub silently disables when
+the Status options are redefined; closed issues, pull requests, and draft
+items with a blank ``Status`` are left alone.
 
 Safety properties:
 
@@ -198,8 +203,14 @@ class Action:
 # ---------------------------------------------------------------------------
 
 
-def decide(item: Item, approved_status: str, done_status: str) -> Optional[Action]:
+def decide(item: Item, approved_status: str, done_status: str,
+           intake_status: Optional[str] = None) -> Optional[Action]:
     """Return the action for ``item`` or ``None`` when nothing should happen."""
+    if item.status is None:
+        if intake_status and item.content_type == "Issue" and item.state == "OPEN":
+            return Action("set-status", item, f"no Status: Status -> {intake_status}",
+                          new_status=intake_status)
+        return None
     if item.status != CCB_STATUS:
         return None
     if item.resolution == APPROVED:
@@ -366,6 +377,7 @@ def fetch_items(client: GraphQLClient, project_id: str) -> List[Item]:
 class Settings:
     approved_status: str = "Backlog - Deferred"
     done_status: str = "Done"
+    intake_status: Optional[str] = CCB_STATUS  # None/"" disables the blank-Status rule
     disapproval_comment: str = DEFAULT_DISAPPROVAL_COMMENT
     apply: bool = False
     mutation_delay: float = 1.0
@@ -380,7 +392,8 @@ def validate_fields(project: Project, settings: Settings) -> None:
                 f"project '{project.title}' has no single-select field '{name}' (known: {known})"
             )
     status = project.fields[STATUS_FIELD]
-    for name in (CCB_STATUS, settings.approved_status, settings.done_status):
+    for name in (CCB_STATUS, settings.approved_status, settings.done_status,
+                 settings.intake_status or CCB_STATUS):
         status.option_id(name)
     resolution = project.fields[RESOLUTION_FIELD]
     for name in (APPROVED, DISAPPROVED):
@@ -416,6 +429,7 @@ class Report:
     total_items: int
     ccb_items: int
     actions: List[Action]
+    blank_items: int = 0
 
 
 def run(client: GraphQLClient, owner: str, number: int, settings: Settings,
@@ -424,10 +438,13 @@ def run(client: GraphQLClient, owner: str, number: int, settings: Settings,
     validate_fields(project, settings)
     items = fetch_items(client, project.id)
     ccb_items = sum(1 for i in items if i.status == CCB_STATUS)
+    blank_items = sum(1 for i in items
+                      if i.status is None and i.content_type == "Issue" and i.state == "OPEN")
     log(f"Project '{project.title}' ({owner} #{number}): {len(items)} items, "
-        f"{ccb_items} in {CCB_STATUS}")
+        f"{ccb_items} in {CCB_STATUS}, {blank_items} open issues with no Status")
 
-    actions = [a for a in (decide(i, settings.approved_status, settings.done_status)
+    actions = [a for a in (decide(i, settings.approved_status, settings.done_status,
+                                  settings.intake_status)
                            for i in items) if a]
     mode = "APPLY" if settings.apply else "DRY-RUN"
     for action in actions:
@@ -440,7 +457,7 @@ def run(client: GraphQLClient, owner: str, number: int, settings: Settings,
         except CcbResolverError as exc:
             action.error = str(exc)
             log(f"::error::{action.item.label}: {exc}")
-    return Report(project.title, len(items), ccb_items, actions)
+    return Report(project.title, len(items), ccb_items, actions, blank_items)
 
 
 # ---------------------------------------------------------------------------
@@ -455,11 +472,13 @@ def summary_markdown(report: Report, owner: str, number: int, settings: Settings
         f"## CCB resolver — {report.project_title} ({owner} project #{number})",
         "",
         f"Mode: **{mode}** — {report.total_items} items scanned, "
-        f"{report.ccb_items} in `{CCB_STATUS}`, {len(actions)} actionable",
+        f"{report.ccb_items} in `{CCB_STATUS}`, {report.blank_items} open issues with no "
+        f"Status, {len(actions)} actionable",
         "",
     ]
     if not actions:
-        lines.append("Nothing to do: no `CCB` items with an actionable `CCB Resolution`.")
+        lines.append("Nothing to do: no `CCB` items with an actionable `CCB Resolution` "
+                     "and no open issues with a blank Status.")
         return "\n".join(lines) + "\n"
     lines += ["| Item | Action | Result |", "|---|---|---|"]
     for action in actions:
@@ -504,6 +523,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Send mutations.  Without this flag the run is a dry-run.")
     parser.add_argument("--approved-status", default="Backlog - Deferred")
     parser.add_argument("--done-status", default="Done")
+    parser.add_argument("--intake-status", default=CCB_STATUS,
+                        help="Status given to open issues whose Status is blank "
+                             "(empty string disables this rule)")
     parser.add_argument("--disapproval-comment", default=DEFAULT_DISAPPROVAL_COMMENT)
     parser.add_argument("--mutation-delay", type=float, default=1.0,
                         help="Seconds to sleep after each mutation")
@@ -522,6 +544,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     settings = Settings(
         approved_status=args.approved_status,
         done_status=args.done_status,
+        intake_status=args.intake_status or None,
         disapproval_comment=args.disapproval_comment,
         apply=args.apply,
         mutation_delay=args.mutation_delay,

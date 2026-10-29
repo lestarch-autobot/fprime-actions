@@ -23,6 +23,19 @@ has already moved them.  After a disapproved issue is closed the board's
 built-in *"Item closed → Status: Done"* workflow (if enabled on the board)
 moves the item; the `done-status` rule covers boards where it is not.
 
+### Intake
+
+| Status | Linked content | Action |
+|---|---|---|
+| *(blank)* | open issue | Set **Status** to `intake-status` (default `CCB`) |
+| *(blank)* | closed issue, PR, draft item | Nothing |
+
+New issues normally reach `CCB` through the board's built-in *"Item added
+to project → Status: CCB"* workflow.  GitHub silently disables that
+workflow when the Status options are redefined (this happened on
+2026-10-23), so the sweep also moves any open issue with a blank Status to
+`CCB`.  Set `intake-status: ""` to turn the rule off.
+
 ## Safety properties
 
 * **Field definitions are never modified.**  The *only* project mutation the
@@ -50,6 +63,7 @@ moves the item; the `done-status` rule covers boards where it is not.
 | `disapproval-comment` | CCB scope message | Comment posted before closing a disapproved issue |
 | `approved-status` | `Backlog - Deferred` | Status given to approved items |
 | `done-status` | `Done` | Status given to disapproved items whose content is already closed |
+| `intake-status` | `CCB` | Status given to open issues whose Status is blank (empty disables) |
 | `mutation-delay-seconds` | `1` | Pause after each mutation |
 
 Outputs: `planned`, `applied`, `failed`, `skipped` (counts).
@@ -94,6 +108,7 @@ python3 ccb-resolver/scripts/ccb_resolver.py --owner nasa --number 21 --apply   
 python3 ccb-resolver/tests/test_ccb_resolver.py
 ```
 
-The tests exercise the decision table, the dry-run write guard, the
+The tests exercise the decision table (including intake of blank-Status
+issues), the dry-run write guard, the
 forbidden-mutation guard, pagination, idempotence, and the step summary
 against an in-memory fake of the GraphQL API; no network access is needed.

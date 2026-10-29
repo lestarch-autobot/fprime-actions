@@ -84,6 +84,29 @@ def test_disapproved_closed_content_sets_done():
     assert action.kind == "set-status" and action.new_status == DONE
 
 
+def test_blank_status_open_issue_is_taken_into_ccb():
+    action = ccb.decide(_item(status=None), APPROVED_STATUS, DONE, intake_status="CCB")
+    assert action.kind == "set-status" and action.new_status == "CCB"
+    # Any resolution value is irrelevant when there is no Status yet.
+    for resolution in ("Approved", "Disapproved", "Tabled"):
+        action = ccb.decide(_item(status=None, resolution=resolution), APPROVED_STATUS, DONE,
+                            intake_status="CCB")
+        assert action.kind == "set-status" and action.new_status == "CCB"
+
+
+def test_blank_status_other_content_is_left_alone():
+    for content, state in (("Issue", "CLOSED"), ("PullRequest", "OPEN"),
+                           ("PullRequest", "CLOSED"), ("DraftIssue", None), ("", None)):
+        item = _item(status=None, content=content, state=state)
+        assert ccb.decide(item, APPROVED_STATUS, DONE, intake_status="CCB") is None, content
+
+
+def test_blank_status_rule_can_be_disabled():
+    for intake in (None, ""):
+        assert ccb.decide(_item(status=None), APPROVED_STATUS, DONE, intake_status=intake) is None
+    assert _decide(_item(status=None)) is None  # pure function defaults to off
+
+
 def test_disapproved_open_pr_or_draft_is_skipped():
     assert _decide(_item(resolution="Disapproved", content="PullRequest")).kind == "skip"
     assert _decide(_item(resolution="Disapproved", content="DraftIssue")).kind == "skip"
@@ -202,6 +225,10 @@ def _board():
         {"id": "P7", "status": "CCB", "resolution": "Disapproved",
          "content": {"__typename": "DraftIssue", "title": "Draft"}},
         {"id": "P8", "status": "Backlog - Resourced", "resolution": None, "content": _issue(8)},
+        {"id": "P9", "status": None, "resolution": None, "content": _issue(9)},
+        {"id": "P10", "status": None, "resolution": None, "content": _issue(10, "CLOSED")},
+        {"id": "P11", "status": None, "resolution": None,
+         "content": dict(_issue(11), __typename="PullRequest")},
     ]
 
 
@@ -216,36 +243,40 @@ def _client(fake, apply):
 def test_dry_run_sends_no_mutations_and_paginates():
     fake = FakeGitHub(_board(), page_size=3)
     report = ccb.run(_client(fake, apply=False), "nasa", 21, _settings(False), log=lambda _m: None)
-    assert report.total_items == 8 and report.ccb_items == 6
+    assert report.total_items == 11 and report.ccb_items == 6 and report.blank_items == 1
     assert fake.mutations == []
     kinds = {a.item.item_id: a.kind for a in report.actions}
     assert kinds == {"P1": "set-status", "P2": "comment-and-close",
-                     "P6": "set-status", "P7": "skip"}
+                     "P6": "set-status", "P7": "skip", "P9": "set-status"}
     assert not any(a.applied for a in report.actions)
     summary = ccb.summary_markdown(report, "nasa", 21, _settings(False))
     assert "dry-run" in summary and "would apply" in summary and "skipped" in summary
-    assert "8 items scanned, 6 in `CCB`, 4 actionable" in summary
+    assert "11 items scanned, 6 in `CCB`, 1 open issues with no Status, 5 actionable" in summary
 
 
 def test_apply_writes_expected_mutations_and_is_idempotent():
     fake = FakeGitHub(_board(), page_size=100)
     report = ccb.run(_client(fake, apply=True), "nasa", 21, _settings(True), log=lambda _m: None)
     applied = sorted(a.item.item_id for a in report.actions if a.applied)
-    assert applied == ["P1", "P2", "P6"]
-    # P1 -> Backlog - Deferred, P6 -> Done, P2 comment + close.
+    assert applied == ["P1", "P2", "P6", "P9"]
+    # P1 -> Backlog - Deferred, P6 -> Done, P2 comment + close, P9 (blank) -> CCB.
     status_updates = {v["item"]: v["option"] for q, v in fake.mutations
                       if "updateProjectV2ItemFieldValue" in q}
-    assert status_updates == {"P1": "F_STATUS:Backlog - Deferred", "P6": "F_STATUS:Done"}
+    assert status_updates == {"P1": "F_STATUS:Backlog - Deferred", "P6": "F_STATUS:Done",
+                              "P9": "F_STATUS:CCB"}
     assert fake.comments == [("I_2", ccb.DEFAULT_DISAPPROVAL_COMMENT)]
     assert fake.closed == ["I_2"]
     assert "stateReason: NOT_PLANNED" in [q for q, _ in fake.mutations if "closeIssue" in q][0]
-    # Items with non-CCB status and the draft were not written.
-    assert not any(v.get("item") in ("P3", "P4", "P5", "P7", "P8") for _, v in fake.mutations)
+    # Items with non-CCB status, the draft, and the blank closed issue / PR
+    # were not written.
+    assert not any(v.get("item") in ("P3", "P4", "P5", "P7", "P8", "P10", "P11")
+                   for _, v in fake.mutations)
     summary = ccb.summary_markdown(report, "nasa", 21, _settings(True))
-    assert summary.count("| applied |") == 3
+    assert summary.count("| applied |") == 4
 
-    # Second run: P1/P6 have moved; P2's issue is closed (board workflow has
-    # not run yet) so it is now the "set Done" case; P7 is still skipped.
+    # Second run: P1/P6 have moved; P9 is now a plain CCB item with no
+    # resolution; P2's issue is closed (board workflow has not run yet) so it
+    # is now the "set Done" case; P7 is still skipped.
     fake.mutations.clear()
     report = ccb.run(_client(fake, apply=True), "nasa", 21, _settings(True), log=lambda _m: None)
     assert [(a.item.item_id, a.kind) for a in report.actions] == [
@@ -302,7 +333,7 @@ def test_user_owned_project_is_found():
     fake = FakeGitHub(_board(), owner_type="user")
     report = ccb.run(_client(fake, apply=False), "lestarch-autobot", 1, _settings(False),
                      log=lambda _m: None)
-    assert report.total_items == 8
+    assert report.total_items == 11
 
 
 def test_missing_field_or_option_fails_before_any_write():
@@ -324,6 +355,22 @@ def test_missing_field_or_option_fails_before_any_write():
     else:
         raise AssertionError("missing option not detected")
     assert fake.mutations == []
+
+
+def test_intake_disabled_leaves_blank_items_alone():
+    fake = FakeGitHub(_board(), page_size=100)
+    settings = _settings(True)
+    settings.intake_status = None
+    report = ccb.run(_client(fake, apply=True), "nasa", 21, settings, log=lambda _m: None)
+    assert report.blank_items == 1
+    assert not any(a.item.item_id == "P9" for a in report.actions)
+    assert not any(v.get("item") == "P9" for _, v in fake.mutations)
+
+
+def test_cli_empty_intake_status_disables_rule():
+    assert ccb.parse_args(["--owner", "nasa", "--number", "21"]).intake_status == "CCB"
+    assert ccb.parse_args(["--owner", "nasa", "--number", "21", "--intake-status", ""]
+                          ).intake_status == ""
 
 
 def test_failed_mutation_is_reported_and_others_continue():
