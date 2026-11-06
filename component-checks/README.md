@@ -31,6 +31,7 @@ override the requirements source (default: the module's `docs/*.md` /
 | R6 | `check_req_ports.py`         | A requirement references every port/interface                |
 | R7 | `check_req_parent_trace.py`  | Every requirement traces to a parent (Parent/Trace column)   |
 | R8 | `check_req_verification.py`  | Every requirement has a verification method (T/A/I/D)        |
+| R9 | `check_req_kinds.py`         | Behavior/Input/Output/Memory/HW-I/O/Performance kinds each covered by a requirement or waived in the SDD (`Kind` column) |
 
 ### Design
 
@@ -42,6 +43,10 @@ override the requirements source (default: the module's `docs/*.md` /
 | D4 | `check_dp_priorities.py`      | Every data product container has a `default priority`        |
 | D5 | `check_req_design_mapping.py` | Every requirement maps to a design artifact                  |
 | D6 | `check_fpp_generate.py`       | FPP passes `fpp-check` (and optionally `fprime-util build`)  |
+| D7 | `check_sdd_port_table.py`     | SDD port table lists every typed port with matching kind/direction and type |
+| D8 | `check_sdd_dictionary_tables.py` | SDD command/telemetry/event/parameter/data-product tables match the FPP model |
+| D9 | `check_sdd_sections.py`       | SDD has a block diagram, sequence diagrams (or explicit N/A), names every state machine, states the component kind, and has an external-interfaces section |
+| D10 | `check_sdd_port_behavior.py` | Every input port is described in SDD prose, not only in a table |
 
 ### Implementation
 
@@ -66,6 +71,8 @@ override the requirements source (default: the module's `docs/*.md` /
 | ID | Script                    | Verifies                                                       |
 |----|---------------------------|----------------------------------------------------------------|
 | C1 | `check_topology_build.py` | Component is instantiated and the topology builds per target   |
+| C2 | `check_hardware_run.py`   | `docs/hardware-run.md` records Platform, Deployment, Commit (ancestor of HEAD), Date, Result PASS, Tester |
+| C3 | `check_ci_status.py`      | GitHub check runs for `--repo`/`--sha` all completed successfully (needs `GITHUB_TOKEN`; `--check-runs-json` offline) |
 
 The FPP model is read with a lightweight regex-level parser (no build cache
 needed); the requirements source is the SDD requirement table

@@ -46,6 +46,13 @@ import check_req_parent_trace  # noqa: E402
 import check_req_ports  # noqa: E402
 import check_req_telemetry  # noqa: E402
 import check_req_verification  # noqa: E402
+import check_req_kinds  # noqa: E402
+import check_sdd_port_table  # noqa: E402
+import check_sdd_dictionary_tables  # noqa: E402
+import check_sdd_sections  # noqa: E402
+import check_sdd_port_behavior  # noqa: E402
+import check_hardware_run  # noqa: E402
+import check_ci_status  # noqa: E402
 import check_sdd  # noqa: E402
 import _doxygen  # noqa: E402
 import check_sm_actions  # noqa: E402
@@ -97,7 +104,7 @@ def test_fpp_parsing() -> None:
 
 def test_requirements_parsing() -> None:
     reqs = _requirements.load_requirements([WIDGET / "docs" / "sdd.md"])
-    check("reqs: count", len(reqs) == 7, f"got {len(reqs)}")
+    check("reqs: count", len(reqs) == 9, f"got {len(reqs)}")
     by_id = {r.req_id: r for r in reqs}
     check("reqs: parent parsed", by_id["WID-001"].parent == "SYS-010")
     check("reqs: verification parsed", by_id["WID-004"].verification == "Analysis")
@@ -138,6 +145,63 @@ def test_requirement_checks() -> None:
         sdd.write_text(sdd.read_text().replace("START and STOP", "begin and halt"))
         code, out = run(check_req_commands.main, ["--module", str(mod_dir)])
         check("R1: fails on untraced command", code == 1 and "START" in out, out)
+
+
+def test_sdd_consistency_checks() -> None:
+    code, out = run(check_req_kinds.main, ["--module", str(WIDGET)])
+    check("R9: passes (all kinds covered or waived)", code == 0, out)
+    for name, mod in (
+        ("D7 port table", check_sdd_port_table),
+        ("D8 dictionary tables", check_sdd_dictionary_tables),
+        ("D9 sections", check_sdd_sections),
+        ("D10 port behavior", check_sdd_port_behavior),
+    ):
+        code, out = run(mod.main, ["--module", str(WIDGET)])
+        check(f"{name}: passes", code == 0, out)
+    code, out = run(check_hardware_run.main, ["--module", str(WIDGET)])
+    check("C2: passes on well-formed record", code == 0, out)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mod = Path(tmp) / "Svc" / "Widget"
+        shutil.copytree(WIDGET, mod)
+        sdd = mod / "docs" / "sdd.md"
+        text = sdd.read_text()
+        broken = text.replace("| dataOut | output | Fw.BufferSend |", "| dataOut | input | Fw.BufferSend |")
+        broken = broken.replace("| STOP | Stop processing |\n", "")
+        broken = broken.replace("Hardware I/O requirements: N/A", "")
+        broken = broken.replace("`dataIn` to `dataOut`", "the input to the output")
+        broken = broken.replace("sequenceDiagram", "graph TD")
+        broken = broken.replace("| Behavior | SYS-010 |", "|  | SYS-010 |")
+        sdd.write_text(broken)
+        code, out = run(check_req_kinds.main, ["--module", str(mod)])
+        check("R9: fails on untyped and missing kinds", code == 1 and "WID-001" in out and "hardware I/O" in out, out)
+        code, out = run(check_sdd_port_table.main, ["--module", str(mod)])
+        check("D7: fails on direction mismatch", code == 1 and "dataOut" in out, out)
+        code, out = run(check_sdd_dictionary_tables.main, ["--module", str(mod)])
+        check("D8: fails on missing command", code == 1 and "STOP" in out, out)
+        code, out = run(check_sdd_sections.main, ["--module", str(mod)])
+        check("D9: fails on missing sequence diagram", code == 1 and "sequence" in out, out)
+        code, out = run(check_sdd_port_behavior.main, ["--module", str(mod)])
+        check("D10: fails on undescribed input port", code == 1 and "dataIn" in out, out)
+        (mod / "docs" / "hardware-run.md").write_text("Platform: Pi\nResult: FAIL\nCommit: nothex\n")
+        code, out = run(check_hardware_run.main, ["--module", str(mod)])
+        check("C2: fails on bad record", code == 1 and "not PASS" in out and "Deployment" in out, out)
+        (mod / "docs" / "hardware-run.md").unlink()
+        code, out = run(check_hardware_run.main, ["--module", str(mod)])
+        check("C2: fails without record", code == 1 and "no docs/hardware-run.md" in out, out)
+
+        runs = Path(tmp) / "runs.json"
+        runs.write_text(json.dumps({"check_runs": [
+            {"name": "build", "status": "completed", "conclusion": "success"},
+            {"name": "ut", "status": "completed", "conclusion": "failure", "html_url": "u"},
+            {"name": "lint", "status": "in_progress", "conclusion": None},
+        ]}))
+        code, out = run(check_ci_status.main, ["--module", str(mod), "--check-runs-json", str(runs)])
+        check("C3: fails on failed/incomplete runs", code == 1 and "ut" in out and "lint" in out, out)
+        code, out = run(check_ci_status.main, ["--module", str(mod), "--check-runs-json", str(runs), "--ignore", "ut", "--ignore", "lint"])
+        check("C3: passes with ignores", code == 0, out)
+        code, out = run(check_ci_status.main, ["--module", str(mod)])
+        check("C3: skips offline", code == 0 and "SKIP" in out, out)
 
 
 def test_design_checks() -> None:
@@ -511,7 +575,7 @@ def test_run_checks_and_catalog() -> None:
         check("run_checks: extra results merged", "U5" in ids)
         check(
             "run_checks: counts",
-            summary["passed"] == 12 and summary["failed"] == 5 and summary["skipped"] == 0,
+            summary["passed"] == 18 and summary["failed"] == 5 and summary["skipped"] == 0,
             json.dumps(
                 {
                     "passed": summary["passed"],
