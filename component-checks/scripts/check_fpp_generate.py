@@ -49,7 +49,10 @@ def main(argv=None) -> int:
                 extra.extend(sorted(inc.rglob("*.fpp")) + sorted(inc.rglob("*.fppi")))
             elif inc.is_file():
                 extra.append(inc)
-        cmd = ["fpp-check"] + [str(p) for p in extra + model.fpp_files]
+        # .fppi files are pulled in by the .fpp that includes them; passing them
+        # as top-level inputs makes the front-end reject their bare members.
+        top_level = [p for p in model.fpp_files if p.suffix == ".fpp"]
+        cmd = ["fpp-check"] + [str(p) for p in extra + top_level]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             output = (proc.stderr or proc.stdout).strip()

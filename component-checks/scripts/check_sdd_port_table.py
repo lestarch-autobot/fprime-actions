@@ -7,6 +7,7 @@ every typed port of the component.  Where the table carries ``Kind`` /
 (async/sync/guarded input or output; port type).
 """
 
+import re
 import sys
 
 from _report import finish, make_parser
@@ -52,7 +53,7 @@ def main(argv=None) -> int:
                     failures.append(f"port '{name}' is documented as '{kind}' but FPP declares {port.kind} {port.direction}")
                 elif kind and port.direction == "input" and port.kind not in kind and any(k in kind for k in ("async", "sync", "guarded")):
                     failures.append(f"port '{name}' is documented as '{kind}' but FPP declares {port.kind} input")
-                if ptype and ptype.split(".")[-1] != port.type.split(".")[-1]:
+                if ptype and re.split(r"::|\.", ptype)[-1] != port.type.split(".")[-1]:
                     failures.append(f"port '{name}' is documented with type '{ptype}' but FPP declares {port.type}")
             for name in sorted(set(documented) - set(fpp_names)):
                 failures.append(f"SDD port table lists '{name}', which is not a typed port in the FPP model")
