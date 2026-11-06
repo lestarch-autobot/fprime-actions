@@ -30,9 +30,11 @@ from pathlib import Path
 import check_command_handlers
 import check_dp_priorities
 import check_dp_priority_configurable
+import check_hardware_run
 import check_include_dependencies
 import check_port_handlers
 import check_req_commands
+import check_req_kinds
 import check_req_data_products
 import check_req_design_mapping
 import check_req_events
@@ -41,6 +43,10 @@ import check_req_parent_trace
 import check_req_ports
 import check_req_telemetry
 import check_req_verification
+import check_sdd_dictionary_tables
+import check_sdd_port_behavior
+import check_sdd_port_table
+import check_sdd_sections
 import check_sm_actions
 import check_ut_include_dependencies
 
@@ -56,14 +62,20 @@ STATIC_CHECKS = [
     ("R6", check_req_ports),
     ("R7", check_req_parent_trace),
     ("R8", check_req_verification),
+    ("R9", check_req_kinds),
     ("D1", check_port_handlers),
     ("D2", check_command_handlers),
     ("D3", check_sm_actions),
     ("D4", check_dp_priorities),
     ("D5", check_req_design_mapping),
+    ("D7", check_sdd_port_table),
+    ("D8", check_sdd_dictionary_tables),
+    ("D9", check_sdd_sections),
+    ("D10", check_sdd_port_behavior),
     ("I1", check_include_dependencies),
     ("I3", check_dp_priority_configurable),
     ("U3", check_ut_include_dependencies),
+    ("C2", check_hardware_run),
 ]
 
 CATEGORY_LABELS = {
