@@ -44,6 +44,12 @@ inputs:
       "" to disable.
     required: false
     default: "devel"
+  max-versions:
+    description: >
+      Number of other versions hosted on the primary ref's site, newest
+      version first.  Older copies are removed.  0 keeps every version.
+    required: false
+    default: "5"
   config-file:
     description: >
       Path (relative to working-directory) of the checklist config file
@@ -93,6 +99,7 @@ runs:
         COMMIT_SHA: ${{ github.sha }}
         CONFIG_FILE: ${{ inputs.config-file }}
         VERSIONS_PRIMARY_REF: ${{ inputs.versions-primary-ref }}
+        MAX_VERSIONS: ${{ inputs.max-versions }}
       run: |
         set -e
         BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
@@ -110,6 +117,7 @@ runs:
             --dest "$BASELINE_DIR" \
             --ref "$REF_NAME" \
             --primary-ref "$VERSIONS_PRIMARY_REF" \
+        --max-versions "$MAX_VERSIONS" \
             --baseline-branch-prefix "$BASELINE_PREFIX" \
           && python3 "${COMMON_PATH}/scripts/mirror.py" \
             --source . \
