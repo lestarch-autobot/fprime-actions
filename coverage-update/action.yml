@@ -36,6 +36,14 @@ inputs:
       subdirectory in the baseline branch.
     required: false
     default: "ut"
+  versions-primary-ref:
+    description: >
+      Ref whose site also hosts the other published versions.  When this ref
+      publishes, every other <baseline-branch-prefix>/* branch is copied to
+      versions/<ref-name>/ and linked from the landing-page header.  Set to
+      "" to disable.
+    required: false
+    default: "devel"
   config-file:
     description: >
       Path (relative to working-directory) of the checklist config file
@@ -84,6 +92,7 @@ runs:
         MODULES_JSONL: ${{ inputs.modules-jsonl }}
         COMMIT_SHA: ${{ github.sha }}
         CONFIG_FILE: ${{ inputs.config-file }}
+        VERSIONS_PRIMARY_REF: ${{ inputs.versions-primary-ref }}
       run: |
         set -e
         BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
@@ -97,7 +106,12 @@ runs:
 
         bash "${COMMON_PATH}/scripts/publish_baseline.sh" \
           "$BASELINE_BRANCH" "$COMMIT_SHA" "coverage" \
-          bash -c 'python3 "${COMMON_PATH}/scripts/mirror.py" \
+          bash -c 'python3 "${COMMON_PATH}/scripts/versions.py" \
+            --dest "$BASELINE_DIR" \
+            --ref "$REF_NAME" \
+            --primary-ref "$VERSIONS_PRIMARY_REF" \
+            --baseline-branch-prefix "$BASELINE_PREFIX" \
+          && python3 "${COMMON_PATH}/scripts/mirror.py" \
             --source . \
             --dest "$BASELINE_DIR" \
             --modules-jsonl "$MODULES_JSONL" \

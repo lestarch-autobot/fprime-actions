@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -30,6 +31,7 @@ import mirror  # noqa: E402
 import catalog  # noqa: E402
 import codeql_findings  # noqa: E402
 import fetch_dismissed_alerts  # noqa: E402
+import versions  # noqa: E402
 from _summary import Summary, load_summary  # noqa: E402
 from _config import coverage_thresholds, load_config  # noqa: E402
 from _tiers import CoverageThresholds, codeql_tier, coverage_tier, normalize_severity  # noqa: E402
@@ -1063,6 +1065,150 @@ def test_catalog_without_int_data_keeps_no_data_cell():
         assert "full-system report" not in mod_page
 
 
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+        cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ).stdout.decode("utf-8").strip()
+
+
+def _publish_branch(remote: Path, work: Path, branch: str, files: dict) -> str:
+    """Commit ``files`` as the whole tree of orphan ``branch`` and push it to ``remote``."""
+    _publish_branch.count = getattr(_publish_branch, "count", 0) + 1
+    _git(work, "checkout", "-q", "--orphan", f"publish-{_publish_branch.count}")
+    _git(work, "rm", "-rfq", "--ignore-unmatch", ".")
+    for rel, text in files.items():
+        (work / rel).parent.mkdir(parents=True, exist_ok=True)
+        (work / rel).write_text(text, encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", branch)
+    _git(work, "push", "-qf", str(remote), f"HEAD:refs/heads/{branch}")
+    return _git(work, "rev-parse", "HEAD")
+
+
+def _version_page(ref: str, ref_type: str) -> dict:
+    return {
+        "index.html": f"<html><body><h1>{ref}</h1></body></html>",
+        "catalog.json": json.dumps({"ref": ref, "ref_type": ref_type}),
+        "Svc/Health/index.html": "<html><body>health</body></html>",
+        "versions/stale/index.html": "<html><body>nested</body></html>",
+    }
+
+
+def test_versions_sync_copies_other_refs_and_links_them():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        remote = root / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        work = root / "work"
+        work.mkdir()
+        _git(work, "init", "-q")
+        _publish_branch(remote, work, "coverage/devel", {"index.html": "<html><body>devel</body></html>"})
+        _publish_branch(remote, work, "coverage/v4.4.2", _version_page("v4.4.2", "tag"))
+        _publish_branch(remote, work, "coverage/v4.10.0", _version_page("v4.10.0", "tag"))
+        rel_head = _publish_branch(
+            remote, work, "coverage/release/v4.4.x", _version_page("release/v4.4.x", "branch")
+        )
+        _publish_branch(remote, work, "coverage/broken", {"README": "no landing page"})
+        _publish_branch(remote, work, "unrelated/v1", _version_page("v1", "tag"))
+
+        dest = root / "dest"
+        dest.mkdir()
+        data = versions.sync_versions(
+            dest=dest, ref="devel", prefix="coverage", remote=str(remote), cwd=work
+        )
+        # Newest version first; a release line sorts above its own tags; the
+        # primary ref, non-site branches and other prefixes are not listed.
+        assert [v["ref"] for v in data["versions"]] == ["v4.10.0", "release/v4.4.x", "v4.4.2"]
+        assert data["primary"] == "devel"
+        assert [v["ref_type"] for v in data["versions"]] == ["tag", "branch", "tag"]
+        assert data["versions"][1]["baseline_commit"] == rel_head
+        assert json.loads((dest / "versions.json").read_text(encoding="utf-8")) == data
+        assert not (dest / "versions/broken").exists()
+        assert not (dest / "versions/devel").exists()
+
+        # Module pages are copied; a version's own versions/ subtree is not.
+        assert (dest / "versions/release/v4.4.x/Svc/Health/index.html").is_file()
+        assert not (dest / "versions/release/v4.4.x/versions").exists()
+
+        # Copied landing pages carry the navigation, relative to their depth.
+        page = (dest / "versions/release/v4.4.x/index.html").read_text(encoding="utf-8")
+        assert page.count(versions.NAV_START) == 1
+        assert '<a href="../../../index.html"><code>devel</code></a>' in page
+        assert "<strong><code>release/v4.4.x</code></strong>" in page
+        assert '<a href="../../../versions/v4.4.2/index.html">' in page
+        assert page.index(versions.NAV_START) < page.index("<h1>")
+
+        # Unchanged heads are not re-copied; a changed head is; a deleted
+        # baseline branch is removed.  Re-injection never duplicates the nav.
+        marker = dest / "versions/v4.4.2/local-marker"
+        marker.write_text("kept", encoding="utf-8")
+        changed = _version_page("release/v4.4.x", "branch")
+        changed["Svc/New/index.html"] = "<html><body>new</body></html>"
+        del changed["Svc/Health/index.html"]
+        _publish_branch(remote, work, "coverage/release/v4.4.x", changed)
+        _git(work, "push", "-q", str(remote), ":refs/heads/coverage/v4.10.0")
+        data = versions.sync_versions(
+            dest=dest, ref="devel", prefix="coverage", remote=str(remote), cwd=work
+        )
+        assert [v["ref"] for v in data["versions"]] == ["release/v4.4.x", "v4.4.2"]
+        assert marker.is_file()
+        assert (dest / "versions/release/v4.4.x/Svc/New/index.html").is_file()
+        assert not (dest / "versions/release/v4.4.x/Svc/Health").exists()
+        assert not (dest / "versions/v4.10.0").exists()
+        page = (dest / "versions/v4.4.2/index.html").read_text(encoding="utf-8")
+        assert page.count(versions.NAV_START) == 1
+        assert "v4.10.0" not in page
+
+        # Last other version gone: no versions/ directory, empty list.
+        _git(work, "push", "-q", str(remote), ":refs/heads/coverage/v4.4.2",
+             ":refs/heads/coverage/release/v4.4.x")
+        data = versions.sync_versions(
+            dest=dest, ref="devel", prefix="coverage", remote=str(remote), cwd=work
+        )
+        assert data["versions"] == []
+        assert not (dest / "versions").exists()
+        assert versions.render_nav(data, current="devel") == ""
+
+
+def test_versions_main_skips_non_primary_ref():
+    with tempfile.TemporaryDirectory() as td:
+        dest = Path(td)
+        # No git access is attempted for a non-primary ref.
+        assert versions.main(["--dest", str(dest), "--ref", "release/v4.4.x", "--remote", "/nonexistent"]) == 0
+        assert versions.main(["--dest", str(dest), "--ref", "devel", "--primary-ref", ""]) == 0
+        assert not (dest / "versions.json").exists()
+
+
+def test_catalog_renders_versions_nav_from_versions_json():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        dest = root / "dest"
+        dest.mkdir()
+        modules = root / "modules.jsonl"
+        modules.write_text(json.dumps({"path": "Svc/Health", "has_ut": True}) + "\n", encoding="utf-8")
+        argv = ["--dest", str(dest), "--modules-jsonl", str(modules), "--ref", "devel", "--commit", "a" * 40]
+
+        assert catalog.main(argv) == 0
+        assert versions.NAV_START not in (dest / "index.html").read_text(encoding="utf-8")
+
+        (dest / "versions.json").write_text(
+            json.dumps({
+                "schema": 1, "primary": "devel",
+                "versions": [{"ref": "release/<x>", "ref_type": "branch", "path": "versions/release/<x>"}],
+            }),
+            encoding="utf-8",
+        )
+        assert catalog.main(argv) == 0
+        index_html = (dest / "index.html").read_text(encoding="utf-8")
+        assert "<strong><code>devel</code></strong>" in index_html
+        assert '<a href="versions/release/&lt;x&gt;/index.html"><code>release/&lt;x&gt;</code></a>' in index_html
+
+        (dest / "versions.json").write_text("not json", encoding="utf-8")
+        assert catalog.main(argv) == 0
+        assert versions.NAV_START not in (dest / "index.html").read_text(encoding="utf-8")
+
+
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -1094,6 +1240,9 @@ TESTS = [
     test_compare_baseline_missing_reports_no_baseline,
     test_mirror_int_artifact_lands_in_int_coverage,
     test_catalog_without_int_data_keeps_no_data_cell,
+    test_versions_sync_copies_other_refs_and_links_them,
+    test_versions_main_skips_non_primary_ref,
+    test_catalog_renders_versions_nav_from_versions_json,
 ]
 
 

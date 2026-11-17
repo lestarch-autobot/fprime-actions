@@ -89,6 +89,10 @@ test fixtures.
   `checks/summary.json` files (published by `component-checks`, discovered via
   `--checks-subdirectory`, default `checks`) add a `checks` entry and a
   `tiers.checks` tier to each module's `catalog.json` record.
+* `versions.py` &mdash; on the primary ref, copies the other baseline
+  branches' renderings to `versions/<ref-name>/` and writes `versions.json`;
+  `catalog.py` renders it as the landing-page version navigation (used by
+  `coverage-update`).
 * `_summary.py` &mdash; shared gcovr `--json-summary` reader.
 
 ## Tests
