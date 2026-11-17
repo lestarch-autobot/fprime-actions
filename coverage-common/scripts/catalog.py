@@ -173,6 +173,34 @@ def load_sdd_summary(path: Path) -> Optional[dict]:
     return doc
 
 
+def load_checklist_summary(path: Path) -> Optional[dict]:
+    """Load a component-checklist summary.json, returning None on failure."""
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict) or doc.get("artifact") != "checklist" or not isinstance(doc.get("counts"), dict):
+        return None
+    return doc
+
+
+def _checklist_label(summary: dict) -> str:
+    """``<decided>/<total> decided`` plus the open and reviewer-decided counts."""
+    counts = summary["counts"]
+    get = lambda key: int(counts.get(key, 0) or 0)  # noqa: E731
+    total = sum(get(k) for k in ("YES", "NO", "N/A", "REVIEW", "UNCHECKED"))
+    label = f"{get('YES') + get('N/A')}/{total} satisfied"
+    for key, word in (("NO", "not satisfied"), ("REVIEW", "to review"), ("UNCHECKED", "unchecked")):
+        if get(key):
+            label += f", {get(key)} {word}"
+    reviewed = int(summary.get("reviewer_decisions", 0) or 0)
+    if reviewed:
+        label += f" ({reviewed} decided by reviewers)"
+    return label
+
+
 def load_checks_summary(path: Path) -> Optional[dict]:
     """Load a checklist-checks summary.json, returning None on failure."""
     if not path.is_file():
@@ -261,6 +289,8 @@ class ModuleEntry:
     checks_report: str = ""
     sdd_summary: Optional[dict] = None
     sdd_report: str = ""
+    checklist_summary: Optional[dict] = None
+    checklist_report: str = ""
     module_report: Optional[str] = None  # roll-up page, when one is written
 
     @property
@@ -431,7 +461,10 @@ def _checks_cell(entry: ModuleEntry) -> str:
     skipped = int(summary.get("skipped", 0) or 0)
     tier = checks_tier(passed, failed)
     label = f"{passed}/{passed + failed + skipped} - {skipped} skipped"
-    return f'{badge_html(tier)} <a href="{html.escape(entry.checks_report)}">{label}</a>'
+    cell = f'{badge_html(tier)} <a href="{html.escape(entry.checks_report)}">{label}</a>'
+    if entry.checklist_summary is not None:
+        cell += f' &middot; <a href="{html.escape(entry.checklist_report)}">checklist</a>'
+    return cell
 
 
 def _render_group_header(group: Group, thresholds: CoverageThresholds) -> str:
@@ -499,6 +532,7 @@ def render_module_index_html(
     int_subdir: str,
     checks_subdir: str,
     sdd_subdir: str,
+    checklist_subdir: str = "checklist",
     check_labels: dict,
 ) -> str:
     """Render a module's roll-up page linking its published artifact subtrees.
@@ -573,6 +607,20 @@ def render_module_index_html(
     else:
         checks_html = '<span class="no-cov">no data</span>'
     rows.append(f"<tr><td>Checklist</td><td>{checks_html}</td></tr>")
+
+    if entry.checklist_summary is not None:
+        analysis = entry.checklist_summary.get("static_analysis") or {}
+        checklist_html = (
+            f'<a href="{html.escape(checklist_subdir)}/index.html">'
+            f"{html.escape(_checklist_label(entry.checklist_summary))}</a>"
+        )
+        if analysis.get("ran"):
+            count = int(analysis.get("findings", 0) or 0)
+            checklist_html += (
+                f" &middot; {html.escape(str(analysis.get('tool') or 'static analysis'))}: "
+                f"{'clean' if count == 0 else f'{count} finding' + ('s' if count != 1 else '')}"
+            )
+        rows.append(f"<tr><td>Component Development Checklist</td><td>{checklist_html}</td></tr>")
 
     if entry.sdd_summary is not None:
         label = "grade" if entry.sdd_summary.get("has_sdd") else "missing"
@@ -737,6 +785,15 @@ def build_catalog(
                 "has_sdd": bool(m.sdd_summary.get("has_sdd")),
                 "report": m.sdd_report,
             }
+        checklist_entry = None
+        if m.checklist_summary is not None:
+            checklist_entry = {
+                "counts": m.checklist_summary["counts"],
+                "reviewer_decisions": int(m.checklist_summary.get("reviewer_decisions", 0) or 0),
+                "checklist_version": m.checklist_summary.get("checklist_version"),
+                "source": m.checklist_summary.get("source"),
+                "report": m.checklist_report,
+            }
         codeql_checks_entry = {}
         for check_subdir, check_summary in m.codeql_checks.items():
             if check_summary is None:
@@ -756,6 +813,7 @@ def build_catalog(
                 "codeql": codeql_entry,
                 "codeql_checks": codeql_checks_entry,
                 "checks": checks_entry,
+                "checklist": checklist_entry,
                 "sdd": sdd_entry,
                 "tiers": {
                     "overall": m.rollup_tier(thresholds),
@@ -861,6 +919,12 @@ def main(argv=None) -> int:
         "the baseline branch are auto-discovered and listed as well.",
     )
     parser.add_argument(
+        "--checklist-subdirectory",
+        default="checklist",
+        help="Per-module subdirectory holding the filled component checklist "
+        '(default: "checklist")',
+    )
+    parser.add_argument(
         "--checks-subdirectory",
         default="checks",
         help="Subdirectory under each module holding checklist-check results "
@@ -898,6 +962,7 @@ def main(argv=None) -> int:
     codeql_subdir = args.codeql_subdirectory or "codeql"
     checks_subdir = args.checks_subdirectory or "checks"
     sdd_subdir = args.sdd_subdirectory or "sdd"
+    checklist_subdir = args.checklist_subdirectory or "checklist"
     thresholds = coverage_thresholds(load_config(args.config))
 
     generated_at = args.generated_at or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -913,7 +978,7 @@ def main(argv=None) -> int:
         dest,
         [rec["path"] for rec in records],
         default_subdir=codeql_subdir,
-        coverage_subdirs=(subdir, int_subdir, checks_subdir, sdd_subdir),
+        coverage_subdirs=(subdir, int_subdir, checks_subdir, sdd_subdir, checklist_subdir),
     )
 
     entries: list[ModuleEntry] = []
@@ -942,6 +1007,8 @@ def main(argv=None) -> int:
                 checks_report=f"{path}/{checks_subdir}/index.html",
                 sdd_summary=load_sdd_summary(mod_dir / sdd_subdir / "summary.json"),
                 sdd_report=f"{path}/{sdd_subdir}/index.html",
+                checklist_summary=load_checklist_summary(mod_dir / checklist_subdir / "summary.json"),
+                checklist_report=f"{path}/{checklist_subdir}/index.html",
                 module_report=f"{path}/index.html" if subdir else None,
             )
         )
@@ -976,6 +1043,7 @@ def main(argv=None) -> int:
                     int_subdir=int_subdir,
                     checks_subdir=checks_subdir,
                     sdd_subdir=sdd_subdir,
+                    checklist_subdir=checklist_subdir,
                     check_labels=check_labels,
                 ),
                 encoding="utf-8",

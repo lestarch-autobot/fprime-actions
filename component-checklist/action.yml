@@ -1,0 +1,176 @@
+name: "F´ component development checklist (publish)"
+description: >
+  Fill the F Prime Component Development Checklist of every component with
+  fprime-auto-checklist (component checks plus the fprime clang-tidy plugin),
+  keep the reviewer decisions recorded in the checklist kept in the
+  repository, and publish the result beside the coverage pages.
+
+inputs:
+  working-directory:
+    description: "Project checkout root"
+    required: false
+    default: "."
+  baseline-branch-prefix:
+    description: "Prefix of the orphan branches holding the published site"
+    required: false
+    default: "coverage"
+  checklist-subdirectory:
+    description: "Per-module subdirectory the checklist is published to"
+    required: false
+    default: "checklist"
+  source-checklist:
+    description: >
+      Checklist kept in the repository, relative to each component directory.
+      Rows decided by a reviewer there are carried into the published
+      checklist; rows decided by tools are recomputed.
+    required: false
+    default: "docs/checklist.md"
+  tool-repository:
+    description: "Repository of fprime-auto-checklist"
+    required: false
+    default: "LeStarch/fprime-auto-checklist"
+  tool-ref:
+    description: "Commit of fprime-auto-checklist to install (pin a full SHA)"
+    required: false
+    default: "e819e7cbd14dde92ed97f6076f1442105aabe818"
+  analyzer:
+    description: >
+      Static analysis filling the cpp/fprime/* items: "clang-tidy" (the
+      fprime clang-tidy plugin, built here against LLVM 15) or "none".
+      CodeQL results stay published by codeql-publish.
+    required: false
+    default: "clang-tidy"
+  compile-commands:
+    description: >
+      compile_commands.json, or the build directory holding it (relative to
+      working-directory).  Generate the build with
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON and build it before this action.
+      Empty: the tool looks for build-fprime-automatic-native*/.
+    required: false
+    default: ""
+  extra-args:
+    description: "Extra arguments for 'fprime-auto-checklist run'"
+    required: false
+    default: ""
+  config-file:
+    description: "Path (relative to working-directory) of the checklist config file"
+    required: false
+    default: ".github/module-checklist.yml"
+
+outputs:
+  baseline-branch:
+    description: "Baseline branch the checklists were published to"
+    value: ${{ steps.publish.outputs.baseline-branch }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Compute ref / ref-type"
+      id: ref
+      shell: bash
+      env:
+        REF: ${{ github.ref }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        echo "ref-name=${REF_NAME}" >> "$GITHUB_OUTPUT"
+        case "$REF" in
+          refs/tags/*) echo "ref-type=tag"    >> "$GITHUB_OUTPUT" ;;
+          *)           echo "ref-type=branch" >> "$GITHUB_OUTPUT" ;;
+        esac
+
+    - name: "Install fprime-auto-checklist"
+      id: tool
+      shell: bash
+      env:
+        TOOL_REPOSITORY: ${{ inputs.tool-repository }}
+        TOOL_REF: ${{ inputs.tool-ref }}
+        ANALYZER: ${{ inputs.analyzer }}
+      run: |
+        set -e
+        TOOL_DIR="${RUNNER_TEMP:-/tmp}/fprime-auto-checklist"
+        rm -rf "$TOOL_DIR"
+        git init -q "$TOOL_DIR"
+        git -C "$TOOL_DIR" fetch -q --depth 1 "https://github.com/${TOOL_REPOSITORY}.git" "$TOOL_REF"
+        git -C "$TOOL_DIR" checkout -q FETCH_HEAD
+        python3 -m pip install --quiet "$TOOL_DIR"
+        if [ "$ANALYZER" = "clang-tidy" ]; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            clang-15 clang-tidy-15 libclang-15-dev llvm-15-dev cmake ninja-build
+          cmake -S "$TOOL_DIR/native" -B "$TOOL_DIR/native/build" -G Ninja \
+            -DClang_DIR=/usr/lib/llvm-15/lib/cmake/clang -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$TOOL_DIR/native/build"
+          PLUGIN="$(find "$TOOL_DIR/native/build" -maxdepth 2 -name '*.so' | head -n 1)"
+          test -n "$PLUGIN"
+          echo "plugin=${PLUGIN}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: "Publish checklists to baseline branch"
+      id: publish
+      if: github.event.repository.fork == false
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
+        REF_NAME: ${{ steps.ref.outputs.ref-name }}
+        REF_TYPE: ${{ steps.ref.outputs.ref-type }}
+        CHECKLIST_SUBDIR: ${{ inputs.checklist-subdirectory }}
+        SOURCE_CHECKLIST: ${{ inputs.source-checklist }}
+        ANALYZER: ${{ inputs.analyzer }}
+        COMPILE_COMMANDS: ${{ inputs.compile-commands }}
+        EXTRA_ARGS: ${{ inputs.extra-args }}
+        COMMIT_SHA: ${{ github.sha }}
+        CONFIG_FILE: ${{ inputs.config-file }}
+        CLANG_TIDY: /usr/lib/llvm-15/bin/clang-tidy
+        FPRIME_TIDY_PLUGIN: ${{ steps.tool.outputs.plugin }}
+      run: |
+        set -e
+        BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
+        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+
+        MODULES_JSONL="${RUNNER_TEMP:-/tmp}/checklist-modules.jsonl"
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . > "$MODULES_JSONL"
+        export MODULES_JSONL
+        CONFIG_ABS="$(pwd)/${CONFIG_FILE}"
+        REPO_ROOT="$(pwd)"
+        WORK_DIR="${RUNNER_TEMP:-/tmp}/checklist-work"
+        export CONFIG_ABS REPO_ROOT WORK_DIR
+
+        # --no-prepare-build: the workflow builds before this action; the
+        # checklist run must not start a build per component.
+        TOOL_ARGS_FILE="${RUNNER_TEMP:-/tmp}/checklist-tool-args.txt"
+        : > "$TOOL_ARGS_FILE"
+        if [ "$ANALYZER" = "clang-tidy" ]; then
+          printf '%s\n' --analyzer clang-tidy --no-prepare-build >> "$TOOL_ARGS_FILE"
+          if [ -n "$COMPILE_COMMANDS" ]; then
+            printf '%s\n' --compile-commands "${REPO_ROOT}/${COMPILE_COMMANDS}" >> "$TOOL_ARGS_FILE"
+          fi
+        else
+          printf '%s\n' --skip-analysis >> "$TOOL_ARGS_FILE"
+        fi
+        for arg in $EXTRA_ARGS; do printf '%s\n' "$arg" >> "$TOOL_ARGS_FILE"; done
+        export TOOL_ARGS_FILE
+
+        bash "${COMMON_PATH}/scripts/publish_baseline.sh" \
+          "$BASELINE_BRANCH" "$COMMIT_SHA" "checklist" \
+          bash -c 'mapfile -t TOOL_ARGS < "$TOOL_ARGS_FILE"
+          python3 "${ACTION_PATH}/scripts/run_checklists.py" \
+            --root "$REPO_ROOT" \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --checklist-subdirectory "$CHECKLIST_SUBDIR" \
+            --source-checklist "$SOURCE_CHECKLIST" \
+            --work-dir "$WORK_DIR" \
+            --ref "$REF_NAME" \
+            --commit "$COMMIT_SHA" \
+            -- "${TOOL_ARGS[@]}" \
+          && python3 "${COMMON_PATH}/scripts/catalog.py" \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --checklist-subdirectory "$CHECKLIST_SUBDIR" \
+            --ref "$REF_NAME" \
+            --ref-type "$REF_TYPE" \
+            --commit "$COMMIT_SHA" \
+            --config "$CONFIG_ABS"'
