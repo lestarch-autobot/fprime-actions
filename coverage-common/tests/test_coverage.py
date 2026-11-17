@@ -1121,6 +1121,16 @@ def test_versions_sync_copies_other_refs_and_links_them():
         # primary ref, non-site branches and other prefixes are not listed.
         assert [v["ref"] for v in data["versions"]] == ["v4.10.0", "release/v4.4.x", "v4.4.2"]
         assert data["primary"] == "devel"
+
+        # A cap keeps the newest versions only and removes older copies.
+        capped_dest = root / "capped"
+        capped_dest.mkdir()
+        versions.sync_versions(dest=capped_dest, ref="devel", prefix="coverage", remote=str(remote), cwd=work)
+        capped = versions.sync_versions(
+            dest=capped_dest, ref="devel", prefix="coverage", remote=str(remote), cwd=work, max_versions=2
+        )
+        assert [v["ref"] for v in capped["versions"]] == ["v4.10.0", "release/v4.4.x"]
+        assert not (capped_dest / "versions/v4.4.2").exists()
         assert [v["ref_type"] for v in data["versions"]] == ["tag", "branch", "tag"]
         assert data["versions"][1]["baseline_commit"] == rel_head
         assert json.loads((dest / "versions.json").read_text(encoding="utf-8")) == data

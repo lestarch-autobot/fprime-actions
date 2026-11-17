@@ -160,10 +160,16 @@ def sync_versions(
     prefix: str,
     remote: str = "origin",
     cwd: Optional[Path] = None,
+    max_versions: int = 0,
 ) -> dict:
-    """Bring ``dest/versions/`` in line with the remote's baseline branches."""
+    """Bring ``dest/versions/`` in line with the remote's baseline branches.
+
+    ``max_versions`` > 0 keeps only that many, newest version first.
+    """
     branches = list_baseline_branches(remote, prefix, cwd=cwd)
     branches.pop(ref, None)
+    if max_versions > 0:
+        branches = {name: branches[name] for name in sorted(branches, key=_version_key)[:max_versions]}
     previous = {
         str(v.get("ref")): v for v in (load_versions(dest) or {}).get("versions", [])
     }
@@ -220,6 +226,8 @@ def main(argv=None) -> int:
                         "nothing is copied when --ref differs")
     parser.add_argument("--baseline-branch-prefix", default="coverage")
     parser.add_argument("--remote", default="origin")
+    parser.add_argument("--max-versions", type=int, default=5,
+                        help="Keep only the newest N other versions (default: 5; 0 keeps all)")
     args = parser.parse_args(argv)
 
     if not args.primary_ref or args.ref != args.primary_ref:
@@ -230,6 +238,7 @@ def main(argv=None) -> int:
         ref=args.ref,
         prefix=args.baseline_branch_prefix,
         remote=args.remote,
+        max_versions=args.max_versions,
     )
     print(f"versions: {len(data['versions'])} other version(s) linked", file=sys.stderr)
     return 0
