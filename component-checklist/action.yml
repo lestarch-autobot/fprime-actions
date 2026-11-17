@@ -52,6 +52,12 @@ inputs:
     description: "Extra arguments for 'fprime-auto-checklist run'"
     required: false
     default: ""
+  publish-from-forks:
+    description: >
+      Publish when the repository is a fork ("true"), to that fork's own
+      baseline branch.  Off by default, like the other publishers.
+    required: false
+    default: "false"
   config-file:
     description: "Path (relative to working-directory) of the checklist config file"
     required: false
@@ -107,7 +113,7 @@ runs:
 
     - name: "Publish checklists to baseline branch"
       id: publish
-      if: github.event.repository.fork == false
+      if: github.event.repository.fork == false || inputs.publish-from-forks == 'true'
       working-directory: ${{ inputs.working-directory }}
       shell: bash
       env:

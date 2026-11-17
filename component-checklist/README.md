@@ -81,6 +81,7 @@ The job needs `contents: write` to push the baseline branch.
 | `analyzer` | `clang-tidy` | `clang-tidy` or `none` |
 | `compile-commands` | `""` | `compile_commands.json` or its build directory |
 | `extra-args` | `""` | Extra arguments for `fprime-auto-checklist run` |
+| `publish-from-forks` | `false` | Publish from a fork to its own baseline branch |
 | `config-file` | `.github/module-checklist.yml` | Checklist config file |
 
 ## Tests
