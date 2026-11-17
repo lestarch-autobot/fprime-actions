@@ -34,7 +34,6 @@ import check_hardware_run
 import check_include_dependencies
 import check_port_handlers
 import check_req_commands
-import check_req_kinds
 import check_req_data_products
 import check_req_design_mapping
 import check_req_events
@@ -62,7 +61,6 @@ STATIC_CHECKS = [
     ("R6", check_req_ports),
     ("R7", check_req_parent_trace),
     ("R8", check_req_verification),
-    ("R9", check_req_kinds),
     ("D1", check_port_handlers),
     ("D2", check_command_handlers),
     ("D3", check_sm_actions),

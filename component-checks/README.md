@@ -28,10 +28,9 @@ override the requirements source (default: the module's `docs/*.md` /
 | R3 | `check_req_events.py`        | A requirement references every event (EVR)                   |
 | R4 | `check_req_parameters.py`    | A requirement references every parameter                     |
 | R5 | `check_req_data_products.py` | A requirement references every data product                  |
-| R6 | `check_req_ports.py`         | A requirement references every port/interface                |
+| R6 | `check_req_ports.py`         | Every port has a known use: a requirement names it, its SDD port-table row has a description, or it is the companion (`<base>Complete\|Done\|Callback\|Response`) of a covered port |
 | R7 | `check_req_parent_trace.py`  | Every requirement traces to a parent (Parent/Trace column)   |
 | R8 | `check_req_verification.py`  | Every requirement has a verification method (T/A/I/D)        |
-| R9 | `check_req_kinds.py`         | Behavior/Input/Output/Memory/HW-I/O/Performance kinds each covered by a requirement or waived in the SDD (`Kind` column) |
 
 ### Design
 
@@ -52,7 +51,7 @@ override the requirements source (default: the module's `docs/*.md` /
 
 | ID | Script                              | Verifies                                                |
 |----|-------------------------------------|----------------------------------------------------------|
-| I1 | `check_include_dependencies.py`     | Source `#include` deps are declared in CMakeLists         |
+| I1 | `check_include_dependencies.py`     | Source `#include` deps are declared in CMakeLists; with `--build-cache`, includes resolve on the build's include path and dependencies FPP adds itself are not reported |
 | I2 | `check_build_warnings.py`           | Builds (or scans build logs) with zero compiler warnings  |
 | I3 | `check_dp_priority_configurable.py` | Data product priorities configurable via command/param    |
 | I4 | `check_static_analysis.py`          | No CodeQL SARIF findings at/above a severity threshold    |
@@ -63,8 +62,8 @@ override the requirements source (default: the module's `docs/*.md` /
 |----|------------------------------------|------------------------------------------------------------|
 | U1 | `check_ut_artifacts.py`            | UT results are published (e.g. on the coverage branch)     |
 | U3 | `check_ut_include_dependencies.py` | UT `#include` deps are declared in the module's CMake      |
-| U4 | `check_leaks.py`                   | `fprime-util check --leak` passes with no leaks            |
-| U5 | `check_coverage_threshold.py`      | Line coverage meets a configurable threshold               |
+| U4 | `check_leaks.py`                   | The module's `*_ut_exe` runs leak-free under LeakSanitizer (ASan builds) or valgrind |
+| U5 | `check_coverage_threshold.py`      | Line coverage (from `coverage/summary.txt` or a gcovr run) meets a configurable threshold |
 
 ### Close-out
 

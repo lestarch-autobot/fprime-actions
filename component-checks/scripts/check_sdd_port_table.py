@@ -10,8 +10,9 @@ every typed port of the component.  Where the table carries ``Kind`` /
 import re
 import sys
 
+from _fpp import load_module_model
 from _report import finish, make_parser
-from _sdd import load_sdd, typed_ports
+from _sdd import load_sdd, split_names, typed_ports
 
 
 def main(argv=None) -> int:
@@ -38,11 +39,11 @@ def main(argv=None) -> int:
                 for row in table.rows:
                     if name_col is None or name_col >= len(row):
                         continue
-                    name = row[name_col].strip("` ")
-                    documented[name] = (
-                        row[kind_col].lower() if kind_col is not None and kind_col < len(row) else "",
-                        row[type_col].strip("` ") if type_col is not None and type_col < len(row) else "",
-                    )
+                    for name in split_names(row[name_col]):
+                        documented[name] = (
+                            row[kind_col].lower() if kind_col is not None and kind_col < len(row) else "",
+                            row[type_col].strip("` ") if type_col is not None and type_col < len(row) else "",
+                        )
             fpp_names = {p.name: p for p in ports}
             for name, port in sorted(fpp_names.items()):
                 if name not in documented:
@@ -53,10 +54,17 @@ def main(argv=None) -> int:
                     failures.append(f"port '{name}' is documented as '{kind}' but FPP declares {port.kind} {port.direction}")
                 elif kind and port.direction == "input" and port.kind not in kind and any(k in kind for k in ("async", "sync", "guarded")):
                     failures.append(f"port '{name}' is documented as '{kind}' but FPP declares {port.kind} input")
-                if ptype and re.split(r"::|\.", ptype)[-1] != port.type.split(".")[-1]:
+                # "Fram.Request → Fram.Status" documents the port type and its return type.
+                documented_type = re.split(r"\s*(?:→|->)\s*", ptype)[0].strip()
+                if documented_type and re.split(r"::|\.", documented_type)[-1] != port.type.split(".")[-1]:
                     failures.append(f"port '{name}' is documented with type '{ptype}' but FPP declares {port.type}")
+            # Special ports (product get/send, time, telemetry, internal ports, ...)
+            # are not typed ports but do legitimately appear in SDD port tables.
+            fpp_text = "".join(p.read_text(encoding="utf-8", errors="replace") for p in load_module_model(args.module).fpp_files)
             for name in sorted(set(documented) - set(fpp_names)):
-                failures.append(f"SDD port table lists '{name}', which is not a typed port in the FPP model")
+                if re.search(rf"\b{re.escape(name)}\b", fpp_text):
+                    continue
+                failures.append(f"SDD port table lists '{name}', which is not a port in the FPP model")
     return finish(
         check_id="D7",
         name="SDD port table matches FPP",

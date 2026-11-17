@@ -46,8 +46,22 @@ class Requirement:
         )
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+#: Header names that mark a requirement-ID column.  Exact (not substring)
+#: matches, so a verification matrix with a "Requirements" column is not
+#: mistaken for a requirements table.
+_ID_HEADERS = {"id", "req id", "req. id", "req-id", "requirement id", "requirement", "req"}
+
+
 def _split_row(line: str) -> List[str]:
-    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return [_HTML_TAG_RE.sub("", cell).strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _id_column(headers: List[str]) -> Optional[int]:
+    for i, header in enumerate(headers):
+        if header.strip().strip("*`").lower() in _ID_HEADERS:
+            return i
+    return None
 
 
 def _column_index(headers: List[str], *keywords: str) -> Optional[int]:
@@ -66,7 +80,7 @@ def _parse_markdown(path: Path) -> List[Requirement]:
         line = lines[i]
         if "|" in line and i + 1 < len(lines) and _DIVIDER_RE.match(lines[i + 1]):
             headers = _split_row(line)
-            id_col = _column_index(headers, "requirement", "req. id", "req id", "id")
+            id_col = _id_column(headers)
             # Only treat tables whose first-ish column is a requirement ID.
             if id_col is not None and _column_index(headers, "requirement") is not None:
                 desc_col = _column_index(headers, "description")

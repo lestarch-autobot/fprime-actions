@@ -49,14 +49,20 @@ def parse_record(text: str) -> dict:
 
 def commit_is_ancestor(sha: str, cwd: Path) -> bool:
     try:
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=cwd, capture_output=True, text=True, timeout=30,
+        )
+        if inside.returncode != 0:
+            return True  # not a git checkout: nothing to compare against
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", sha, "HEAD"],
             cwd=cwd, capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return True  # git unavailable: do not fail on environment
-    if result.returncode == 128:
-        return True  # not a git checkout
+    # Inside a checkout, exit 128 means the recorded commit is not a known
+    # object, which is as much a mismatch as a non-ancestor (exit 1).
     return result.returncode == 0
 
 

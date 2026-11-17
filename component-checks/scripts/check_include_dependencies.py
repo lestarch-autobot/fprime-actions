@@ -20,9 +20,13 @@ includes resolving to a directory with no CMakeLists.txt (shared
 source directories that register no target) are also skipped.
 """
 
+import json
 import re
+import shlex
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import List, Optional, Set
 
 from _report import finish, make_parser
 from _sources import TEST_DIR_NAMES, impl_sources, includes_of
@@ -35,6 +39,109 @@ _SKIP_TOP_DIRS = {"config", "fpp", "gtest", "gmock"}
 _UMBRELLA_ONLY_DIRS = {"Fw"}
 
 _SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx")
+
+
+# Every F Prime module transitively depends on Fw_Types (cmake/API.cmake,
+# GLOBAL_IMPLICIT_DEPENDENCY), so it never needs listing in DEPENDS.
+_IMPLICIT_TARGETS = {"Fw_Types"}
+
+
+@dataclass
+class BuildContext:
+    """What the build cache knows: include roots and dependencies FPP adds by itself."""
+
+    include_dirs: List[Path] = field(default_factory=list)
+    roots: List[Path] = field(default_factory=list)
+    auto_targets: Set[str] = field(default_factory=set)
+    cache: Optional[Path] = None
+    project: Optional[Path] = None
+
+
+def _module_rel(path: Path, ctx: BuildContext) -> Optional[str]:
+    """Project/framework-relative path of the CMake module that owns ``path``."""
+    path = path.resolve()
+    if ctx.cache is not None and ctx.cache in path.parents:
+        rel = path.relative_to(ctx.cache)
+        if rel.parts and rel.parts[0] == "F-Prime":
+            rel = Path(*rel.parts[1:])
+            roots = [r for r in ctx.roots if r != ctx.project and r != ctx.cache]
+        else:
+            roots = [ctx.project] if ctx.project else []
+        candidates = [r / rel for r in roots]
+    else:
+        candidates = [path]
+    for candidate in candidates:
+        for root in sorted(ctx.roots, key=lambda r: -len(r.parts)):
+            if root == candidate or root not in candidate.parents:
+                continue
+            directory = candidate if candidate.is_dir() else candidate.parent
+            while directory != root:
+                if (directory / "CMakeLists.txt").is_file():
+                    return directory.relative_to(root).as_posix()
+                directory = directory.parent
+    return None
+
+
+def load_build_context(build_cache: Optional[Path], module_dir: Path) -> BuildContext:
+    ctx = BuildContext()
+    if build_cache is None or not build_cache.is_dir():
+        return ctx
+    ctx.cache = build_cache.resolve()
+    ctx.project = ctx.cache.parent
+    compdb = ctx.cache / "compile_commands.json"
+    module_resolved = module_dir.resolve()
+    if compdb.is_file():
+        try:
+            entries = json.loads(compdb.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            entries = []
+        for entry in entries:
+            if module_resolved not in Path(entry.get("file", "")).resolve().parents:
+                continue
+            words = entry.get("arguments") or shlex.split(entry.get("command", ""))
+            for i, word in enumerate(words):
+                inc = None
+                if word in ("-I", "-isystem") and i + 1 < len(words):
+                    inc = words[i + 1]
+                elif word.startswith("-I") and len(word) > 2:
+                    inc = word[2:]
+                if inc and Path(inc).is_dir():
+                    inc_path = Path(inc).resolve()
+                    if inc_path not in ctx.include_dirs:
+                        ctx.include_dirs.append(inc_path)
+            break
+    # Module names are relative to a CMake project root: the project itself and the
+    # F Prime framework (the include root holding Fw/Types), not every -I directory.
+    ctx.roots = [ctx.project] + [
+        d for d in ctx.include_dirs if d != ctx.project and ctx.cache not in d.parents and (d / "Fw" / "Types").is_dir()
+    ]
+    try:
+        module_rel = module_resolved.relative_to(ctx.project)
+    except ValueError:
+        return ctx
+    fpp_cache = ctx.cache / module_rel / "fpp-cache"
+    for name in ("direct.txt", "framework.txt"):
+        try:
+            lines = (fpp_cache / name).read_text(encoding="utf-8").split()
+        except OSError:
+            continue
+        for line in lines:
+            if name == "framework.txt":
+                ctx.auto_targets.add(line.strip())
+                continue
+            rel = _module_rel(Path(line), ctx)
+            if rel:
+                ctx.auto_targets.add(rel.replace("/", "_"))
+    return ctx
+
+
+def resolve_dependency(include: str, ctx: BuildContext) -> Optional[str]:
+    """Module path owning ``include`` by looking it up on the build's include path."""
+    for inc_dir in ctx.include_dirs:
+        candidate = inc_dir / include
+        if candidate.is_file():
+            return _module_rel(candidate, ctx)
+    return None
 
 
 def dependency_of(include: str) -> str | None:
@@ -107,7 +214,15 @@ def main(argv=None) -> int:
         default="CMakeLists.txt",
         help="CMake file relative to the module (default: CMakeLists.txt)",
     )
+    parser.add_argument(
+        "--build-cache",
+        type=Path,
+        default=None,
+        help="F Prime build cache: resolves includes on the real include path and treats "
+        "FPP-derived dependencies (fpp-cache/direct.txt, framework.txt) as declared",
+    )
     args = parser.parse_args(argv)
+    ctx = load_build_context(args.build_cache, args.module)
 
     cmake_path = args.module / args.cmake
     sources = impl_sources(args.module)
@@ -122,11 +237,19 @@ def main(argv=None) -> int:
         cmake_text = cmake_path.read_text(encoding="utf-8", errors="replace")
 
     deps_needed = {}
+    auto_satisfied = set()
     for include in includes_of(sources):
-        dep = dependency_of(include)
+        dep = resolve_dependency(include, ctx) if ctx.include_dirs else None
+        if dep is None and ctx.include_dirs and any((d / include).is_file() for d in ctx.include_dirs):
+            continue  # found on the include path but owned by no module (platform/config header)
+        if dep is None:
+            dep = dependency_of(include)
         if dep is None:
             continue
         if not is_reportable_dependency(dep, args.module):
+            continue
+        if dep.replace("/", "_") in _IMPLICIT_TARGETS | ctx.auto_targets:
+            auto_satisfied.add(dep)
             continue
         deps_needed.setdefault(dep, include)
 
@@ -146,7 +269,8 @@ def main(argv=None) -> int:
         module=args.module,
         failures=failures,
         skipped_reason=skipped_reason,
-        detail=f"{len(deps_needed)} dependency module(s) checked",
+        detail=f"{len(deps_needed)} dependency module(s) checked"
+        + (f"; {len(auto_satisfied)} provided by FPP/implicit framework dependencies" if auto_satisfied else ""),
         json_output=args.json_output,
     )
 

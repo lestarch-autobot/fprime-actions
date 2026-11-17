@@ -35,11 +35,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-# The shared config loader lives in the sibling coverage-common action.
-_COMMON_SCRIPTS = str(Path(__file__).resolve().parents[2] / "coverage-common" / "scripts")
-if _COMMON_SCRIPTS not in sys.path:
-    sys.path.insert(0, _COMMON_SCRIPTS)
-
 from _config import docs_site, load_config
 from _doxygen import doxygen_class_page, find_component_classes
 from _fpp import FppModel, load_module_model

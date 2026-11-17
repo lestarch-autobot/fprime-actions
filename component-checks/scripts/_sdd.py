@@ -33,9 +33,10 @@ class Table:
         return None
 
     def cells(self, col: Optional[int]) -> List[str]:
+        """Names in a column; a cell listing several names (``a, b`` / ``a / b``) yields each."""
         if col is None:
             return []
-        return [row[col].strip("` ") for row in self.rows if col < len(row) and row[col].strip()]
+        return [n for row in self.rows if col < len(row) for n in split_names(row[col])]
 
 
 @dataclass
@@ -68,6 +69,22 @@ class Sdd:
             ):
                 return True
         return False
+
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][\w.:]*$")
+
+
+def split_names(cell: str) -> List[str]:
+    """Names in one cell: ``pingIn / pingOut`` or ``A, B`` yield each; prose cells stay whole.
+
+    Parenthesised text (``Event (N, cause)``) is dropped before splitting, and
+    the split is only kept when every part is an identifier.
+    """
+    stripped = re.sub(r"\([^)]*\)", "", cell).strip("` ")
+    parts = [n.strip("` ") for n in re.split(r"\s*[,/]\s*", stripped) if n.strip("` ")]
+    if parts and all(_IDENT_RE.match(n) for n in parts):
+        return parts
+    return [stripped] if stripped else []
 
 
 def _split_row(line: str) -> List[str]:

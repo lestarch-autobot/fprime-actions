@@ -11,10 +11,11 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -27,6 +28,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(COMMON_SCRIPTS))
 
 import _fpp  # noqa: E402
+import _sdd  # noqa: E402
 import _requirements  # noqa: E402
 import check_build_warnings  # noqa: E402
 import check_command_handlers  # noqa: E402
@@ -46,7 +48,6 @@ import check_req_parent_trace  # noqa: E402
 import check_req_ports  # noqa: E402
 import check_req_telemetry  # noqa: E402
 import check_req_verification  # noqa: E402
-import check_req_kinds  # noqa: E402
 import check_sdd_port_table  # noqa: E402
 import check_sdd_dictionary_tables  # noqa: E402
 import check_sdd_sections  # noqa: E402
@@ -148,8 +149,6 @@ def test_requirement_checks() -> None:
 
 
 def test_sdd_consistency_checks() -> None:
-    code, out = run(check_req_kinds.main, ["--module", str(WIDGET)])
-    check("R9: passes (all kinds covered or waived)", code == 0, out)
     for name, mod in (
         ("D7 port table", check_sdd_port_table),
         ("D8 dictionary tables", check_sdd_dictionary_tables),
@@ -168,13 +167,9 @@ def test_sdd_consistency_checks() -> None:
         text = sdd.read_text()
         broken = text.replace("| dataOut | output | Fw.BufferSend |", "| dataOut | input | Fw.BufferSend |")
         broken = broken.replace("| STOP | Stop processing |\n", "")
-        broken = broken.replace("Hardware I/O requirements: N/A", "")
         broken = broken.replace("`dataIn` to `dataOut`", "the input to the output")
         broken = broken.replace("sequenceDiagram", "graph TD")
-        broken = broken.replace("| Behavior | SYS-010 |", "|  | SYS-010 |")
         sdd.write_text(broken)
-        code, out = run(check_req_kinds.main, ["--module", str(mod)])
-        check("R9: fails on untyped and missing kinds", code == 1 and "WID-001" in out and "hardware I/O" in out, out)
         code, out = run(check_sdd_port_table.main, ["--module", str(mod)])
         check("D7: fails on direction mismatch", code == 1 and "dataOut" in out, out)
         code, out = run(check_sdd_dictionary_tables.main, ["--module", str(mod)])
@@ -509,6 +504,186 @@ def test_sdd_grading() -> None:
     check("sdd: override demotes gold to silver", graded["tier"] == "silver", str(graded))
 
 
+_THING_FPP = """module Dev {
+  passive component Thing {
+    sync input port go: Fw.Ping
+    output port goComplete: Fw.Ping
+    output port busOut: Drv.ByteStreamSend
+  }
+}
+"""
+
+_THING_REQS = """# Thing
+
+## Requirements
+
+| ID | Requirement | Verification |
+|---|---|---|
+| REQ-1 | The go port shall start a transfer. | Unit Test |
+
+## Ports
+
+| Port | Kind | Type | Purpose |
+|---|---|---|---|
+"""
+
+
+def _thing_module(root: Path, port_rows: str) -> str:
+    root.mkdir(parents=True)
+    (root / "Thing.fpp").write_text(_THING_FPP)
+    (root / "docs").mkdir()
+    (root / "docs" / "sdd.md").write_text(_THING_REQS + port_rows)
+    return str(root)
+
+
+def test_req_ports_known_use_case() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        # A port is covered by a requirement, a described SDD port-table row,
+        # or by being the companion (<base>Complete) of a covered port.
+        module = _thing_module(
+            Path(tmp) / "covered",
+            "| go | sync input | Fw.Ping | start |\n"
+            "| goComplete | output | Fw.Ping | |\n"
+            "| busOut | output | Drv.ByteStreamSend | frames to the bus driver |\n",
+        )
+        code, out = run(check_req_ports.main, ["--module", module])
+        check("R6: requirement, SDD description and companion cover ports", code == 0, out)
+
+        module = _thing_module(Path(tmp) / "bare", "| busOut | output | Drv.ByteStreamSend | |\n")
+        code, out = run(check_req_ports.main, ["--module", module])
+        check("R6: undescribed port still fails", code != 0 and "busOut" in out and "goComplete" not in out, out)
+
+
+def _include_project(root: Path, depends: str):
+    """Component including a framework header, an FPP-config header found
+    through a library include root, and a plain library header."""
+    fw = root / "fprime"
+    (fw / "Fw" / "Types").mkdir(parents=True)
+    (fw / "Fw" / "Types" / "CMakeLists.txt").write_text("register_fprime_module()\n")
+    (fw / "Fw" / "Types" / "Assert.hpp").write_text("")
+    proj = root / "proj"
+    lib = proj / "Lib"
+    (lib / "Cfg").mkdir(parents=True)
+    (lib / "Cfg" / "CMakeLists.txt").write_text("register_fprime_config()\n")
+    (lib / "Cfg" / "Cfg.fpp").write_text("")
+    (lib / "Util").mkdir()
+    (lib / "Util" / "CMakeLists.txt").write_text("register_fprime_module()\n")
+    (lib / "Util" / "Util.hpp").write_text("")
+    comp = lib / "Comp" / "Thing"
+    comp.mkdir(parents=True)
+    (comp / "Thing.cpp").write_text(
+        '#include "Fw/Types/Assert.hpp"\n#include "Cfg/Cfg.hpp"\n#include "Util/Util.hpp"\n'
+    )
+    (comp / "CMakeLists.txt").write_text(f"register_fprime_module(SOURCES Thing.cpp DEPENDS {depends})\n")
+    cache = proj / "build-fprime-automatic-native"
+    (cache / "Lib" / "Cfg").mkdir(parents=True)
+    (cache / "Lib" / "Cfg" / "Cfg.hpp").write_text("")
+    fpp_cache = cache / "Lib" / "Comp" / "Thing" / "fpp-cache"
+    fpp_cache.mkdir(parents=True)
+    (fpp_cache / "direct.txt").write_text(f"{lib / 'Cfg' / 'Cfg.fpp'}\n")
+    (fpp_cache / "framework.txt").write_text("Fw_Comp\n")
+    (cache / "locs.fpp").write_text("")
+    (cache / "compile_commands.json").write_text(
+        json.dumps(
+            [
+                {
+                    "directory": str(cache),
+                    "file": str(comp / "Thing.cpp"),
+                    "command": f"c++ -I{proj} -I{fw} -I{cache} -I{lib} -I{cache / 'Lib'} -c {comp / 'Thing.cpp'}",
+                }
+            ]
+        )
+    )
+    return comp, cache
+
+
+def test_include_dependencies_with_build_cache() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        comp, cache = _include_project(Path(tmp) / "ok", "Lib_Util")
+        code, out = run(check_include_dependencies.main, ["--module", str(comp), "--build-cache", str(cache)])
+        check("I1: build cache resolves FPP-added and implicit dependencies", code == 0, out)
+
+        comp, cache = _include_project(Path(tmp) / "bad", "Fw_Buffer")
+        code, out = run(check_include_dependencies.main, ["--module", str(comp), "--build-cache", str(cache)])
+        check(
+            "I1: build cache still reports an undeclared library",
+            code != 0 and "Lib_Util" in out and "Fw_Types" not in out and "Cfg" not in out,
+            out,
+        )
+
+
+def test_closeout_check_fixes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        repo = root / "repo"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        check(
+            "C2: unknown commit inside a checkout is not an ancestor",
+            check_hardware_run.commit_is_ancestor("0123456abcdef", repo) is False,
+        )
+
+        for label, argv in (
+            ("repo", ["--repo", "../evil", "--sha", "abcdef1"]),
+            ("sha", ["--repo", "owner/name", "--sha", "../x"]),
+        ):
+            try:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    check_ci_status.main(["--module", str(root), *argv])
+                rejected = False
+            except SystemExit:
+                rejected = True
+            check(f"C3: malformed --{label} rejected", rejected)
+
+        (root / "settings.ini").write_text("[fprime]\n")
+        module = root / "Lib" / "Comp"
+        module.mkdir(parents=True)
+        exe = root / "build-fprime-automatic-native-ut" / "bin" / "Linux" / "Lib_Comp_ut_exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        check("U4: UT executable found in the project cache", check_leaks.ut_executables(module) == [exe])
+        check("U4: plain executable is not ASan", check_leaks.is_asan_instrumented(exe) is False)
+        exe.write_bytes(b"\x7fELF__asan_init")
+        check("U4: ASan executable detected", check_leaks.is_asan_instrumented(exe) is True)
+
+        (root / "docs").mkdir()
+        (root / "docs" / "sdd.md").write_text(
+            "# X\n\n## External References\n\n| Document | Identifier / Revision | Type | Governs |\n"
+            "|---|---|---|---|\n"
+            "| Infineon CY15B102QN datasheet | 002-26764 Rev. *D | Datasheet | command set |\n"
+            "| Bus ICD | ICD-1234 | ICD | framing |\n"
+        )
+        rows = check_sdd_sections.external_references_table(_sdd.load_sdd(root))
+        check(
+            "D9: external references table read",
+            rows == ["Datasheet 002-26764 Rev. *D: Infineon CY15B102QN datasheet", "ICD ICD-1234: Bus ICD"],
+            str(rows),
+        )
+
+    check("U4: clean valgrind output", check_leaks.leaks_in("definitely lost: 0 bytes\nERROR SUMMARY: 0 errors") == [])
+    check(
+        "U4: valgrind leak reported",
+        check_leaks.leaks_in("definitely lost: 1,024 bytes in 2 blocks") == ["definitely lost: 1,024"],
+    )
+    lsan = "SUMMARY: LeakSanitizer: 48 byte(s) leaked in 1 allocation(s)."
+    check("U4: LeakSanitizer leak reported", check_leaks.leaks_in(lsan) == [lsan])
+
+    check(
+        "U5: fprime-util summary line read",
+        check_coverage_threshold.line_percent_txt("lines: 98.7% (223 out of 226)\nbranches: 91.8%") == 98.7,
+    )
+    table = "File   Lines  Exec  Cover  Missing\nX.cpp\n   226  223  98%  293\n" + "-" * 20 + "\nTOTAL      226     223    98%\n"
+    check("U5: gcovr TOTAL row read", check_coverage_threshold.line_percent_txt(table) == 98.67)
+    check("U5: no coverage in text", check_coverage_threshold.line_percent_txt("no coverage here") is None)
+
+    text = "Reads shall follow datasheet 002-26764 Rev. *D command set. See also ICD 1234-A."
+    cited = sorted({f"{m.group(1)} {m.group(2)}" for m in check_sdd_sections._EXTERNAL_DOC_RE.finditer(text)})
+    check("D9: cited external documents found", cited == ["ICD 1234-A", "datasheet 002-26764 Rev. *D"], str(cited))
+    check(
+        "D9: unnumbered datasheet mention is not a citation",
+        not check_sdd_sections._EXTERNAL_DOC_RE.search("the datasheet says nothing numbered here"),
+    )
+
+
 def test_doxygen_mapping() -> None:
     check(
         "doxygen: page mangling",
@@ -575,7 +750,7 @@ def test_run_checks_and_catalog() -> None:
         check("run_checks: extra results merged", "U5" in ids)
         check(
             "run_checks: counts",
-            summary["passed"] == 18 and summary["failed"] == 5 and summary["skipped"] == 0,
+            summary["passed"] == 17 and summary["failed"] == 5 and summary["skipped"] == 0,
             json.dumps(
                 {
                     "passed": summary["passed"],
@@ -724,6 +899,9 @@ def main() -> int:
         test_build_level_checks_offline,
         test_checks_tier,
         test_sdd_grading,
+        test_req_ports_known_use_case,
+        test_include_dependencies_with_build_cache,
+        test_closeout_check_fixes,
         test_doxygen_mapping,
         test_run_checks_and_catalog,
     ]

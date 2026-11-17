@@ -28,7 +28,7 @@ from typing import List
 _COMMENT_RE = re.compile(r"(#|@<|@)[^\n]*")
 _COMMAND_RE = re.compile(r"\b(?:async|sync|guarded)\s+command\s+(\w+)")
 _TELEMETRY_RE = re.compile(r"\btelemetry\s+(\w+)\s*:")
-_EVENT_RE = re.compile(r"\bevent\s+(\w+)\s*[(:]")
+_EVENT_RE = re.compile(r"\bevent\s+(?!port\b)(\w+)")
 _PARAM_RE = re.compile(r"\bparam\s+(\w+)\s*:")
 _PRODUCT_RECORD_RE = re.compile(r"\bproduct\s+record\s+(\w+)")
 _PRODUCT_CONTAINER_RE = re.compile(r"\bproduct\s+container\s+(\w+)")

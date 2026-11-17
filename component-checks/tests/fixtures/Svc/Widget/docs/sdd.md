@@ -7,19 +7,17 @@ driven by a rate group.
 
 ## 2. Requirements
 
-Requirement | Description | Kind | Parent | Verification Method
------------ | ----------- | ---- | ------ | -------------------
-WID-001 | The `Svc::Widget` component shall START and STOP processing on command | Behavior | SYS-010 | Unit Test
-WID-002 | The `Svc::Widget` component shall report the WidgetCount telemetry channel | Output | SYS-011 | Unit Test
-WID-003 | The `Svc::Widget` component shall emit WidgetStarted and WidgetError events | Output | SYS-011 | Unit Test
-WID-004 | The `Svc::Widget` component shall use the THRESHOLD parameter | Input | SYS-012 | Analysis
-WID-005 | The `Svc::Widget` component shall produce WidgetRecord into WidgetContainer and OrphanContainer via productSendOut and productRequestOut | Output | SYS-013 | Unit Test
-WID-006 | The `Svc::Widget` component shall accept data on dataIn, run on the run port, and forward via dataOut, cmdIn, cmdRegOut, cmdResponseOut, eventOut, tlmOut, timeGetOut, prmGetOut, prmSetOut, productRecvIn | Input | SYS-014 | Inspection
-WID-007 | The `Svc::Widget` component shall allow SET_PRIORITY to change data product priority | Behavior | | Unit Test
-WID-008 | The `Svc::Widget` component shall process each dataIn buffer within one rate-group cycle | Performance | SYS-015 | Unit Test
-WID-009 | The `Svc::Widget` component shall buffer at most one pending dataIn buffer | Memory | SYS-016 | Unit Test
-
-Hardware I/O requirements: N/A (the widget has no hardware interface).
+Requirement | Description | Parent | Verification Method
+----------- | ----------- | ------ | -------------------
+WID-001 | The `Svc::Widget` component shall START and STOP processing on command | SYS-010 | Unit Test
+WID-002 | The `Svc::Widget` component shall report the WidgetCount telemetry channel | SYS-011 | Unit Test
+WID-003 | The `Svc::Widget` component shall emit WidgetStarted and WidgetError events | SYS-011 | Unit Test
+WID-004 | The `Svc::Widget` component shall use the THRESHOLD parameter | SYS-012 | Analysis
+WID-005 | The `Svc::Widget` component shall produce WidgetRecord into WidgetContainer and OrphanContainer via productSendOut and productRequestOut | SYS-013 | Unit Test
+WID-006 | The `Svc::Widget` component shall accept data on dataIn, run on the run port, and forward via dataOut, cmdIn, cmdRegOut, cmdResponseOut, eventOut, tlmOut, timeGetOut, prmGetOut, prmSetOut, productRecvIn | SYS-014 | Inspection
+WID-007 | The `Svc::Widget` component shall allow SET_PRIORITY to change data product priority | | Unit Test
+WID-008 | The `Svc::Widget` component shall process each dataIn buffer within one rate-group cycle | SYS-015 | Unit Test
+WID-009 | The `Svc::Widget` component shall buffer at most one pending dataIn buffer | SYS-016 | Unit Test
 
 ## 3. Design
 
