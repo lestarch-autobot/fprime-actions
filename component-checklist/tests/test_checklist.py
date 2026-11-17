@@ -82,7 +82,9 @@ def test_run_checklists_publishes_components_only():
         assert summary["source"] is None
         assert summary["static_analysis"] == {"tool": "clang-tidy", "ran": True, "findings": 2}
         # A failing tool run and a module without a component publish nothing.
-        assert not (dest / "Svc/Broken/checklist/summary.json").exists()
+        broken = json.loads((dest / "Svc/Broken/checklist/summary.json").read_text())
+        assert broken["error"] and broken["total"] == 0 and broken["source"] is None
+        assert not (dest / "Svc/Broken/checklist/index.html").exists()
         assert not (dest / "Fw/Types").exists()
 
         page = (out / "index.html").read_text()
@@ -133,12 +135,37 @@ def test_catalog_links_checklist():
         entry = {m["path"]: m for m in json.loads((dest / "catalog.json").read_text())["modules"]}
         assert entry["Svc/Widget"]["checklist"]["report"] == "Svc/Widget/checklist/index.html"
         assert entry["Svc/Widget"]["checklist"]["reviewer_decisions"] == 1
+        assert entry["Svc/Widget"]["checklist"]["tier"] == "gold"
+        assert entry["Svc/Broken"]["checklist"]["tier"] == "silver"
         assert entry["Fw/Types"]["checklist"] is None
         assert '<a href="Svc/Widget/checklist/index.html">checklist</a>' in (dest / "index.html").read_text()
         module_page = (dest / "Svc/Widget/index.html").read_text()
         assert "Component Development Checklist" in module_page
-        assert '<a href="checklist/index.html">1/2 satisfied, 1 not satisfied (1 decided by reviewers)</a>' in module_page
+        assert '</span> <a href="checklist/index.html">1/2 satisfied, 1 not satisfied (1 decided by reviewers)</a>' in module_page
         assert "clang-tidy: 2 findings" in module_page
+
+
+def test_checklist_tier():
+    from _tiers import checklist_tier
+
+    counts = {"YES": 70, "N/A": 3, "NO": 0, "REVIEW": 0, "UNCHECKED": 0}
+    assert checklist_tier({"source": None, "counts": counts}) == "silver"
+    assert checklist_tier({"source": "Svc/A/docs/checklist.md", "counts": counts}) == "platinum"
+    for key in ("NO", "REVIEW", "UNCHECKED"):
+        assert checklist_tier({"source": "x", "counts": {**counts, key: 1}}) == "gold"
+    assert checklist_tier({"source": "x", "counts": {}}) == "gold"
+
+    def entry(summary):
+        return catalog.ModuleEntry(
+            path="Svc/A", has_ut=False, ut_summary=None, ut_report="", int_summary=None, int_report="",
+            codeql_checks={}, codeql_report="", sdd_summary={"artifact": "sdd", "tier": "platinum"},
+            checklist_summary=summary,
+        )
+
+    assert entry(None).rollup_tier(None) == "platinum"  # not a component / action not used
+    assert entry({"source": None, "counts": counts}).rollup_tier(None) == "silver"
+    assert entry({"source": "x", "counts": {**counts, "REVIEW": 2}}).rollup_tier(None) == "gold"
+    assert entry({"source": "x", "counts": counts}).rollup_tier(None) == "platinum"
 
 
 TESTS = [
@@ -146,6 +173,7 @@ TESTS = [
     test_run_checklists_carries_repository_checklist,
     test_all_components_failing_is_an_error,
     test_catalog_links_checklist,
+    test_checklist_tier,
 ]
 
 

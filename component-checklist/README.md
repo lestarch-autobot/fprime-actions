@@ -29,6 +29,21 @@ reviewer decisions are carried into the published checklist, stamped with the
 commit they were made at and flagged when the component changed since.  The
 action never commits to the source branch.
 
+## Grading
+
+A component whose checklist is published is capped by it in the catalog's
+overall tier:
+
+| Checklist | Highest tier |
+|-----------|--------------|
+| None kept in the repository (`source-checklist` missing) | silver |
+| Kept in the repository, some item not YES or N/A | gold |
+| Kept in the repository, every item YES or N/A | platinum |
+
+A reviewer's recorded override of a tool verdict (`fprime-auto-checklist
+decide`, a note is required) counts as the reviewer's status.  Modules that
+are not components are not affected.
+
 ## Static analysis
 
 `analyzer: clang-tidy` (default) builds the fprime clang-tidy plugin against

@@ -77,6 +77,22 @@ def codeql_tier(worst_severity: str | None) -> str:
     return "bronze"
 
 
+def checklist_tier(summary: dict) -> str:
+    """Highest tier a component's development checklist allows.
+
+    No checklist kept in the repository caps the component at silver.  With
+    one, every item YES or N/A allows platinum (a reviewer's recorded
+    override of a tool verdict counts as the reviewer's status); anything
+    else caps it at gold.
+    """
+    if not summary.get("source"):
+        return "silver"
+    counts = summary.get("counts") or {}
+    open_items = sum(int(counts.get(k, 0) or 0) for k in ("NO", "REVIEW", "UNCHECKED"))
+    satisfied = sum(int(counts.get(k, 0) or 0) for k in ("YES", "N/A"))
+    return "platinum" if open_items == 0 and satisfied > 0 else "gold"
+
+
 def checks_tier(passed: int, failed: int) -> str:
     """Map checklist-check pass/fail counts to a tier.
 

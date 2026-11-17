@@ -176,6 +176,11 @@ def run_module(args, module: str, tool_args: List[str]) -> Optional[dict]:
     if not markdown_path.is_file() or not json_path.is_file():
         tail = result.stdout.decode("utf-8", "replace").strip().splitlines()[-5:]
         print(f"WARNING: checklist for {module} failed (exit {result.returncode}):", *tail, sep="\n  ", file=sys.stderr)
+        # Still a component: publish an empty summary so it is graded as having no checklist.
+        summary = summarize({}, module=module, ref=args.ref, commit=args.commit, source=None)
+        summary["error"] = "fprime-auto-checklist produced no checklist"
+        (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        (out_dir / "index.html").unlink(missing_ok=True)
         return None
 
     doc = json.loads(json_path.read_text(encoding="utf-8"))

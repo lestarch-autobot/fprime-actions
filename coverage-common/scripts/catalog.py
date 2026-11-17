@@ -43,7 +43,7 @@ from urllib.parse import quote
 from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
 import versions as versions_mod
-from _tiers import SEVERITY_ORDER, TIERS, CoverageThresholds, checks_tier, codeql_tier, coverage_tier
+from _tiers import SEVERITY_ORDER, TIERS, CoverageThresholds, checklist_tier, checks_tier, codeql_tier, coverage_tier
 
 SCHEMA_VERSION = 6
 
@@ -314,7 +314,8 @@ class ModuleEntry:
         """Worst (minimum) tier across every artifact with published data.
 
         Artifacts without data are excluded, except the SDD, which always
-        participates: a missing SDD counts as bronze.
+        participates: a missing SDD counts as bronze.  A component whose
+        development checklist is published is capped by ``checklist_tier``.
         """
         tiers: list[str] = []
         if self.ut_summary is not None:
@@ -329,6 +330,8 @@ class ModuleEntry:
                 int(self.checks_summary.get("passed", 0) or 0),
                 int(self.checks_summary.get("failed", 0) or 0),
             ))
+        if self.checklist_summary is not None:
+            tiers.append(checklist_tier(self.checklist_summary))
         tiers.append(self.sdd_tier)
         return TIERS[max(TIERS.index(t) for t in tiers)]
 
@@ -611,6 +614,7 @@ def render_module_index_html(
     if entry.checklist_summary is not None:
         analysis = entry.checklist_summary.get("static_analysis") or {}
         checklist_html = (
+            f"{badge_html(checklist_tier(entry.checklist_summary))} "
             f'<a href="{html.escape(checklist_subdir)}/index.html">'
             f"{html.escape(_checklist_label(entry.checklist_summary))}</a>"
         )
@@ -792,6 +796,7 @@ def build_catalog(
                 "reviewer_decisions": int(m.checklist_summary.get("reviewer_decisions", 0) or 0),
                 "checklist_version": m.checklist_summary.get("checklist_version"),
                 "source": m.checklist_summary.get("source"),
+                "tier": checklist_tier(m.checklist_summary),
                 "report": m.checklist_report,
             }
         codeql_checks_entry = {}
