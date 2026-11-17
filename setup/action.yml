@@ -20,11 +20,13 @@ runs:
   # "externally managed" (PEP 668). This prevents pip install from working
   # without a virtual environment. actions/setup-python creates a usable,
   # non-Homebrew Python so subsequent pip installs succeed.
+  # Pinned to 3.14: fastcrc and pydantic_core in the F´ requirements.txt have
+  # no Python 3.15 wheels and their PyO3 source builds reject 3.15.
   - name: "Setup Python (macOS)"
     if: runner.os == 'macOS'
     uses: actions/setup-python@v5
     with:
-      python-version: "3.x"
+      python-version: "3.14"
   - run: git fetch --tags
     shell: bash
   # Cache pip downloads/wheels so requirement installs avoid re-downloading.
