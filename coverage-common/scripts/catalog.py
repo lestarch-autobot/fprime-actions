@@ -42,6 +42,7 @@ from urllib.parse import quote
 
 from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
+import versions as versions_mod
 from _tiers import SEVERITY_ORDER, TIERS, CoverageThresholds, checks_tier, codeql_tier, coverage_tier
 
 SCHEMA_VERSION = 6
@@ -628,6 +629,7 @@ def render_index_html(
     check_labels: dict,
     entries: List[ModuleEntry],
     thresholds: CoverageThresholds,
+    versions_nav: str = "",
 ) -> str:
     """Render the checklist landing page."""
     groups = _group_modules(entries)
@@ -672,6 +674,7 @@ def render_index_html(
         '<html lang="en"><head><meta charset="utf-8">'
         f"<title>F\u00b4 Component Quality \u2014 {html.escape(ref)}</title>"
         f"<style>{CSS}</style></head><body>"
+        f"{versions_nav}"
         f"<h1>F\u00b4 Component Quality</h1>"
         f'<div class="meta">{html.escape(ref_type)} <code>{html.escape(ref)}</code> '
         f"@ <code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
@@ -1012,6 +1015,9 @@ def main(argv=None) -> int:
         check_labels=check_labels,
         entries=entries,
         thresholds=thresholds,
+        versions_nav=versions_mod.render_nav(
+            versions_mod.load_versions(dest), current=args.ref
+        ),
     )
     (dest / "index.html").write_text(html_text, encoding="utf-8")
 

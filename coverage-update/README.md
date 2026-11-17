@@ -47,7 +47,13 @@ permissions:
    machine-readable `catalog.json` (schema v4).  The checklist merges
    whatever other artifact types (e.g. [`codeql-publish`](../codeql-publish/),
    [`component-checks`](../component-checks/)) already exist on the branch.
-5. Commits and pushes via the shared retrying publish helper
+5. On the primary ref (`versions-primary-ref`, default `devel`), copies the
+   renderings of every other baseline branch (release branches and tags) to
+   `versions/<ref-name>/`, records them in `versions.json`, and adds a
+   **Versions** navigation line to the header of the landing page and of each
+   copied landing page.  A version is re-copied only when its baseline branch
+   head changed.
+6. Commits and pushes via the shared retrying publish helper
    (`coverage-common/scripts/publish_baseline.sh`); non-fast-forward pushes
    are retried after re-mirroring, so concurrent writers to the same branch
    cannot clobber each other.
@@ -74,6 +80,7 @@ concurrency:
 | `jobs`                   | `""`         | Parallel job count for check. `random` picks 1-32; empty omits `-j`.                                  |
 | `baseline-branch-prefix` | `coverage`   | Prefix applied to `<ref-name>` to form the baseline branch (`<prefix>/<ref-name>`).                  |
 | `coverage-subdirectory`  | `coverage`   | Subdirectory inside each module's baseline-branch entry. Set to `""` to flatten the shadow folder.   |
+| `versions-primary-ref`   | `devel`      | Ref whose site hosts the other versions: its publish copies every other `<prefix>/*` branch to `versions/<ref-name>/` and links them in the landing-page header. `""` disables. |
 | `config-file`            | `.github/module-checklist.yml` | Checklist config file in the repo (tier thresholds and future settings). Defaults apply when missing. |
 
 ## Outputs
